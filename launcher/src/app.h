@@ -63,6 +63,9 @@ public:
     // The window stays hidden while the game runs, and when starting the game directly.
     bool WindowHidden() const;
     void ForceWindow() { forceWindow_ = true; }
+    // Linux: the arguments Steam passed (%command% in the launch options). Kept only if they start
+    // Slave Zero; used when the selected game folder is that Steam copy.
+    void SetSteamCommand(const std::vector<std::string>& args);
     void SetFonts(ImFont* body, ImFont* title, ImFont* big) { body_ = body; title_ = title; big_ = big; }
 
 private:
@@ -99,6 +102,10 @@ private:
     bool quit_ = false;
     bool dirty_ = false;
     bool forceWindow_ = false;   // --launcher on the command line
+    std::vector<std::string> steamCmd_;
+    fs::path steamCmdDir_;       // game folder the Steam command starts
+    std::vector<fs::path> installs_;  // detected copies of the game
+    bool UsesSteamCommand() const;
     bool hiddenStart_ = false;   // starting the game directly; window not shown yet
     bool pendingPlay_ = false;
     bool gameWasRunning_ = false;

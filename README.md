@@ -20,7 +20,7 @@ No game files are included: you need your own copy of the game.
   - in-game settings menu: **F10** (configurable) or Back + Start on a gamepad. Mouse, keyboard and
     gamepad navigation; the game is paused and gets no input while it is open. Most settings apply
     live; window mode, aspect ratio and texture options are marked and applied with "Restart game"
-- **Launcher** — Windows `.exe` and Linux AppImage. Finds the game (GOG registry, Lutris, Heroic),
+- **Launcher** — Windows `.exe` and Linux AppImage. Finds the game (GOG registry, Lutris, Heroic, Steam libraries),
   installs/repairs the renderer, and exposes the settings: resolution, display mode, frame rate,
   anti-aliasing, screen filters, controls and audio, plus Proton/Wine, gamescope, MangoHud and GameMode
   on Linux. Its "Build HD textures" button downloads Real-ESRGAN and generates the texture pack locally.
@@ -28,6 +28,13 @@ No game files are included: you need your own copy of the game.
   stays in the background while the game runs to restart the game or reopen when the in-game menu asks.
   On Linux inside gamescope (Steam Game Mode) it tags the game's window with `STEAM_GAME` so gamescope
   shows and focuses it.
+- **Steam copy:** the Steam release is the same game (identical executable and data). Set the
+  launch options to `"/path/SlaveZero-Launcher-x86_64.AppImage" %command%` (Linux) or
+  `"C:\path\SlaveZero-Launcher.exe" %command%` (Windows). On Linux the launcher then runs Steam's own
+  command for the Steam copy, so Steam's Proton, prefix, overlay and playtime apply. Steam's install
+  script (`gencfg.bat`) writes the data paths in `szOptions.ini` as DOS short paths on a drive letter that
+  only exists while the script runs, which is why the Steam copy cannot find its data under Proton; the
+  launcher rewrites them to the install's real location on every save.
 - A 2-byte compatibility patch for `SlaveZero.exe`: its CPU-speed probe executes `cli`/`sti`, which
   faults on Windows NT and Wine. The launcher applies it and keeps `SlaveZero.exe.original`.
 

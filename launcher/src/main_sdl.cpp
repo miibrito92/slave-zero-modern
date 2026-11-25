@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "app.h"
@@ -47,8 +48,12 @@ int main(int argc, char** argv) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     App app;
-    for (int i = 1; i < argc; ++i)  // Steam appends its own arguments; only ours matter
+    std::vector<std::string> steamArgs;  // Steam passes its game command after ours (%command%)
+    for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--launcher") == 0) app.ForceWindow();
+        else steamArgs.push_back(argv[i]);
+    }
+    app.SetSteamCommand(steamArgs);
     LauncherSetupImGui(app, scale);
     ImGui_ImplSDL3_InitForOpenGL(g_window, gl);
     ImGui_ImplOpenGL3_Init("#version 330");

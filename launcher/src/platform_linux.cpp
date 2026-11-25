@@ -25,6 +25,7 @@
 #include <thread>
 
 #include "platform.h"
+#include "steam.h"
 
 extern char** environ;
 
@@ -260,6 +261,11 @@ std::vector<fs::path> DetectGameDirs() {
         std::regex re("\"install_path\"\\s*:\\s*\"([^\"]*Slave[^\"]*)\"", std::regex::icase);
         for (std::sregex_iterator it(all.begin(), all.end(), re), end; it != end; ++it) add(fs::path((*it)[1].str()));
     }
+    // Steam libraries (native and Flatpak Steam)
+    for (const fs::path& lib : SteamLibraries({Home() / ".local/share/Steam", Home() / ".steam/steam",
+                                               Home() / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+                                               Home() / ".var/app/com.valvesoftware.Steam/data/Steam"}))
+        add(lib / "steamapps/common/Slave Zero");
     // shallow scan of usual game locations
     for (const fs::path& root : {Home() / "Games", Home() / ".wine/drive_c", Home() / "GOG Games"}) {
         if (!fs::is_directory(root, ec)) continue;
@@ -310,7 +316,11 @@ std::vector<Runner> DetectRunners() {
     return protons;
 }
 
+bool IsSteamInstall(const fs::path& gameDir) { return PathIsSteamInstall(gameDir); }
+
 fs::path PrefixForGameDir(const fs::path& gameDir) {
+    // Steam copy: Steam's own prefix for the game, <library>/steamapps/compatdata/<appid>/pfx
+    if (IsSteamInstall(gameDir)) return gameDir.lexically_normal().parent_path().parent_path() / "compatdata" / kSteamAppId / "pfx";
     for (fs::path p = gameDir; p.has_parent_path() && p != p.parent_path(); p = p.parent_path())
         if (p.filename() == "drive_c") return p.parent_path();
     return {};
@@ -320,7 +330,8 @@ bool Launch(const LaunchOptions& o, std::string& err) {
     std::vector<std::string> argv;
     std::vector<std::pair<std::string, std::string>> env;
     fs::path exe = o.gameDir / "SlaveZero.exe";
-    if (o.prefix.empty()) { err = "the game folder is not inside a Wine prefix"; return false; }
+    bool viaSteam = !o.steamCommand.empty();
+    if (o.prefix.empty() && !viaSteam) { err = "the game folder is not inside a Wine prefix"; return false; }
 
     if (o.gamescope && !InsideGamescope()) {
         fs::path gs = FindInPath("gamescope");
@@ -337,7 +348,10 @@ bool Launch(const LaunchOptions& o, std::string& err) {
     if (o.mangohud) env.push_back({"MANGOHUD", "1"});
     env.push_back({"SZM_LAUNCHER", "1"});  // the in-game menu can ask us to restart the game
 
-    if (o.runner.kind == Runner::Proton) {
+    if (viaSteam) {
+        // Steam's own command (its runtime, Proton and prefix); Steam already set up the environment
+        argv.insert(argv.end(), o.steamCommand.begin(), o.steamCommand.end());
+    } else if (o.runner.kind == Runner::Proton) {
         fs::path umu = FindInPath("umu-run");
         if (!umu.empty()) {
             env.push_back({"PROTONPATH", o.runner.path.string()});
@@ -366,7 +380,7 @@ bool Launch(const LaunchOptions& o, std::string& err) {
         env.push_back({"WINEPREFIX", o.prefix.string()});
         argv.push_back(o.runner.path.string());
     }
-    argv.push_back(exe.string());
+    if (!viaSteam) argv.push_back(exe.string());
     {
         std::stringstream ss(o.extraEnv);
         std::string kv;

@@ -28,7 +28,12 @@ struct LaunchOptions {
     bool gamemode = false;
     int outW = 0, outH = 0, refresh = 0;  // for gamescope
     std::string extraEnv;                 // "KEY=value KEY2=value"
+    // Linux, Steam copy started from Steam: the command Steam passed us (%command%), run as-is so
+    // Steam's own Proton, prefix, overlay and playtime tracking apply.
+    std::vector<std::string> steamCommand;
 };
+
+constexpr const char* kSteamAppId = "328470";
 
 namespace platform {
 const char* Name();
@@ -37,6 +42,7 @@ fs::path ConfigDir();                       // directory for launcher.ini (may b
 fs::path ExecutableDir();
 DisplayInfo PrimaryDisplay();
 std::vector<fs::path> DetectGameDirs();     // best guesses, most likely first
+bool IsSteamInstall(const fs::path& gameDir);  // inside a Steam library (steamapps/common)
 std::vector<Runner> DetectRunners();        // empty on Windows
 fs::path PrefixForGameDir(const fs::path& gameDir);  // Wine prefix containing the game (Linux)
 bool Launch(const LaunchOptions& o, std::string& err);

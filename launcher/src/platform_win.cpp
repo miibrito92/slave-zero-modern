@@ -9,8 +9,10 @@
 
 #include <atomic>
 #include <thread>
+#include <tuple>
 
 #include "platform.h"
+#include "steam.h"
 
 static std::atomic<int> g_games{0};
 
@@ -67,6 +69,17 @@ std::vector<fs::path> DetectGameDirs() {
     };
     add(RegPath(HKEY_LOCAL_MACHINE, L"SOFTWARE\\GOG.com\\Games\\1207662553", L"path"));
     add(RegPath(HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\GOG.com\\Games\\1207662553", L"path"));
+    {  // Steam libraries
+        std::vector<fs::path> roots;
+        for (auto [hive, key, val] : {std::tuple{HKEY_CURRENT_USER, L"Software\\Valve\\Steam", L"SteamPath"},
+                                      std::tuple{HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Valve\\Steam", L"InstallPath"},
+                                      std::tuple{HKEY_LOCAL_MACHINE, L"SOFTWARE\\Valve\\Steam", L"InstallPath"}}) {
+            fs::path p = RegPath(hive, key, val);
+            if (!p.empty()) roots.push_back(p.make_preferred());
+        }
+        roots.push_back(L"C:\\Program Files (x86)\\Steam");
+        for (const fs::path& lib : SteamLibraries(roots)) add(lib / L"steamapps" / L"common" / L"Slave Zero");
+    }
     add(L"C:\\GOG Games\\Slave Zero");
     add(L"C:\\Program Files (x86)\\GOG Galaxy\\Games\\Slave Zero");
     return out;
@@ -74,6 +87,7 @@ std::vector<fs::path> DetectGameDirs() {
 
 std::vector<Runner> DetectRunners() { return {}; }
 fs::path PrefixForGameDir(const fs::path&) { return {}; }
+bool IsSteamInstall(const fs::path& gameDir) { return PathIsSteamInstall(gameDir); }
 
 bool Launch(const LaunchOptions& o, std::string& err) {
     std::wstring exe = (o.gameDir / "SlaveZero.exe").wstring();

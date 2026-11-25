@@ -1,5 +1,8 @@
 #include "app.h"
 
+#include <algorithm>
+#include <cctype>
+
 #include <cmath>
 #include <cstdlib>
 #include <cstdio>
@@ -100,12 +103,13 @@ void App::Init() {
     for (size_t i = 0; i < runners_.size(); ++i)
         if (runners_[i].path.string() == runnerSaved_) s_.runnerIndex = (int)i;
 
+    installs_ = platform::DetectGameDirs();
     fs::path dir;
     if (!saved.empty() && fs::exists(fs::u8path(saved) / kExe)) dir = fs::u8path(saved);
+    else if (!steamCmdDir_.empty() && fs::exists(steamCmdDir_ / kExe)) dir = steamCmdDir_;  // started from Steam
     else if (fs::exists(platform::ExecutableDir() / kExe)) dir = platform::ExecutableDir();
     else {
-        auto found = platform::DetectGameDirs();
-        if (!found.empty()) dir = found.front();
+        if (!installs_.empty()) dir = installs_.front();
     }
     SetGameDir(dir);
     if (s_.startDirectly && gameValid_ && !forceWindow_ && !std::getenv("SZL_SHOT") && !std::getenv("SZL_REPORT")) {
@@ -167,6 +171,37 @@ void App::LoadSettings() {
     dirty_ = false;
 }
 
+// How the game (under Wine on Linux) sees a file of this install: C:\... inside the prefix,
+// Z:\... (the whole Unix filesystem) otherwise, the plain path on Windows.
+static std::string GameWinPath(const fs::path& p, const fs::path& prefix) {
+    if (platform::IsWindows()) return p.u8string();
+    fs::path abs = p.lexically_normal();
+    std::string s;
+    if (!prefix.empty()) {
+        fs::path rel = abs.lexically_relative((prefix / "drive_c").lexically_normal());
+        if (!rel.empty() && rel.generic_u8string().rfind("..", 0) != 0) s = "C:/" + rel.generic_u8string();
+    }
+    if (s.empty()) s = "Z:" + abs.generic_u8string();
+    std::replace(s.begin(), s.end(), '/', '\\');
+    return s;
+}
+
+// The data paths in szOptions.ini are written once, by whatever installed the game. Steam's
+// install script stores them as DOS short paths on a drive letter that only existed while the
+// script ran (e.g. S:\STEA~P3I\common\...), so under Proton the game cannot find its data.
+// Point every one that has a file in this install at that file.
+static void FixDataPaths(Ini& o, const fs::path& gameDir, const fs::path& prefix) {
+    static const char* zips[][2] = {{"Gallery Zip Name", "Gallery.zip"}, {"Texture Zip Name", "textures.zip"},
+                                    {"Audio Zip Name", "audio.zip"},     {"Music Zip Name", "music.zip"},
+                                    {"Ambient Zip Name", "ambient.zip"}, {"Dat Zip Name", "dat.zip"}};
+    std::error_code ec;
+    for (auto& z : zips) {
+        fs::path f = gameDir / "Data" / z[1];
+        if (fs::exists(f, ec)) o.Set("Settings", z[0], GameWinPath(f, prefix));
+    }
+    if (fs::is_directory(gameDir / "Scripts", ec)) o.Set("Settings", "Script Directory Name", GameWinPath(gameDir / "Scripts", prefix));
+}
+
 bool App::SaveSettings() {
     bool ok = true;
     if (gameValid_) {
@@ -217,6 +252,7 @@ bool App::SaveSettings() {
             o.SetFloat("Audio", "SFX Volume", s_.sfxVol);
             o.SetInt("Audio", "Use EAX", s_.eax);
             o.SetInt("Audio", "Use Hardware", s_.eax);
+            FixDataPaths(o, gameDir_, prefix_);
             ok &= o.Save();
         }
     }
@@ -296,7 +332,7 @@ bool App::Install(std::string& msg) {
     // executable compatibility fix
     auto exe = ReadFile(gameDir_ / kExe);
     if (exe.size() != kExeSize) {
-        msg = "SlaveZero.exe is not the GOG version this launcher knows; left untouched.";
+        msg = "SlaveZero.exe is not the GOG / Steam version this launcher knows; left untouched.";
     } else {
         bool needs = false;
         for (auto& p : kExePatch) needs |= exe[p.off] == p.orig;
@@ -328,6 +364,26 @@ void App::Notify(const std::string& msg, bool error) {
 
 static bool TakeFlag(const fs::path& dir, const char* name);
 
+static bool SameDir(const fs::path& a, const fs::path& b) {
+    std::error_code ec;
+    return !a.empty() && !b.empty() && fs::equivalent(a, b, ec);
+}
+
+void App::SetSteamCommand(const std::vector<std::string>& args) {
+    for (const std::string& a : args) {
+        fs::path p = fs::u8path(a);
+        std::string name = p.filename().string();
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if (name == "slavezero.exe") {
+            steamCmd_ = args;
+            steamCmdDir_ = p.parent_path();
+            return;
+        }
+    }
+}
+
+bool App::UsesSteamCommand() const { return !steamCmd_.empty() && SameDir(steamCmdDir_, gameDir_); }
+
 void App::Play() {
     if (!gameValid_) { Notify("Choose the Slave Zero folder first.", true); return; }
     if (rendererStatus_ != Status::Ok || exeStatus_ != Status::Ok) {
@@ -346,6 +402,7 @@ void App::Play() {
         o.mangohud = s_.mangohud;
         o.gamemode = s_.gamemode;
         o.extraEnv = s_.extraEnv;
+        if (UsesSteamCommand()) o.steamCommand = steamCmd_;
         o.outW = s_.windowed ? s_.winW : display_.width;
         o.outH = s_.windowed ? s_.winH : display_.height;
         o.refresh = display_.refresh;
@@ -479,9 +536,22 @@ void App::DrawGameFolder() {
     ImGui::TextUnformatted("Game folder");
     ImGui::SameLine();
     float btn = ImGui::CalcTextSize("Browse...").x + ImGui::GetStyle().FramePadding.x * 2;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - btn - ImGui::GetStyle().ItemSpacing.x);
+    bool several = installs_.size() > 1;
+    float pick = several ? ImGui::CalcTextSize("Installs").x + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2 : 0.0f;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - btn - pick - ImGui::GetStyle().ItemSpacing.x * (several ? 2 : 1));
     if (ImGui::InputText("##path", pathBuf_, sizeof pathBuf_, ImGuiInputTextFlags_EnterReturnsTrue))
         SetGameDir(fs::u8path(pathBuf_));
+    if (several) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(pick);
+        if (ImGui::BeginCombo("##installs", "Installs", ImGuiComboFlags_HeightLarge)) {
+            for (const fs::path& d : installs_) {
+                std::string label = std::string(platform::IsSteamInstall(d) ? "Steam   " : "GOG / other   ") + d.u8string();
+                if (ImGui::Selectable(label.c_str(), SameDir(d, gameDir_))) { SetGameDir(d); dirty_ = true; }
+            }
+            ImGui::EndCombo();
+        }
+    }
     ImGui::SameLine();
     if (ImGui::Button("Browse...")) platform::PickFolder([this](const fs::path& p) { SetGameDir(p); dirty_ = true; });
 
@@ -497,10 +567,15 @@ void App::DrawGameFolder() {
     chip(exeStatus_ == Status::Ok ? "compatibility fix" : exeStatus_ == Status::Outdated ? "compatibility fix pending"
                                                                                           : "unknown executable",
          exeStatus_ == Status::Ok, exeStatus_ == Status::Outdated);
-    if (!platform::IsWindows() && gameValid_) {
+    if (gameValid_) {
         ImGui::SameLine();
-        ImGui::TextColored(prefix_.empty() ? kWarn : kMuted, "  prefix: %s",
-                           prefix_.empty() ? "(not inside a Wine prefix)" : prefix_.u8string().c_str());
+        if (UsesSteamCommand())
+            ImGui::TextColored(kMuted, "  Steam copy, started through Steam");
+        else if (platform::IsSteamInstall(gameDir_))
+            ImGui::TextColored(kMuted, platform::IsWindows() ? "  Steam copy" : "  Steam copy, prefix: %s", prefix_.u8string().c_str());
+        else if (!platform::IsWindows())
+            ImGui::TextColored(prefix_.empty() ? kWarn : kMuted, "  prefix: %s",
+                               prefix_.empty() ? "(not inside a Wine prefix)" : prefix_.u8string().c_str());
     }
 }
 
@@ -732,6 +807,11 @@ void App::DrawGameTab() {
 void App::DrawLinuxTab() {
     if (!BeginForm("linux")) return;
     Section("Compatibility layer");
+    if (UsesSteamCommand()) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextColored(kMuted, "Started from Steam: the game runs with the Proton version set in Steam.");
+    }
     Label("Proton / Wine");
     if (runners_.empty()) {
         ImGui::TextColored(kErr, "None found. Install GE-Proton (e.g. with ProtonUp-Qt) or Wine.");
