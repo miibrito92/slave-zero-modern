@@ -1,5 +1,9 @@
 // Linux platform layer: finds the game and Proton/Wine, launches through umu-run / proton / wine.
 #include <SDL3/SDL.h>
+#include <X11/Xatom.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -12,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <regex>
 #include <atomic>
@@ -122,6 +127,78 @@ void SDLCALL OnFolderPicked(void*, const char* const* files, int) {
 }
 
 }  // namespace
+
+// Steam Game Mode shows and focuses only X11 windows whose STEAM_GAME property matches the running
+// game. Steam's overlay library normally sets it inside the game, but umu removes that library in a
+// gamescope session (and only tags windows itself for Flatpak installs), so the game ran unseen and
+// without input. While the game runs, tag its windows from here. Xlib is loaded at run time.
+static void TagGameWindowsForSteam() {
+    unsigned long appId = 0;
+    auto num = [](const char* s) -> unsigned long long {
+        if (!s || !*s || std::strspn(s, "0123456789") != std::strlen(s)) return 0;
+        return std::strtoull(s, nullptr, 10);
+    };
+    if (unsigned long long a = num(std::getenv("SteamAppId"))) appId = (unsigned long)a;
+    else if (unsigned long long g = num(std::getenv("SteamGameId"))) appId = (unsigned long)(g > 0xffffffffull ? g >> 32 : g);
+    if (!appId) return;
+    void* lib = dlopen("libX11.so.6", RTLD_NOW | RTLD_LOCAL);
+    if (!lib) return;
+#define X11FN(name) auto p##name = reinterpret_cast<decltype(&name)>(dlsym(lib, #name))
+    X11FN(XOpenDisplay); X11FN(XCloseDisplay); X11FN(XInternAtom); X11FN(XQueryTree); X11FN(XGetClassHint);
+    X11FN(XGetWindowProperty); X11FN(XChangeProperty); X11FN(XFree); X11FN(XFlush);
+#undef X11FN
+    if (!pXOpenDisplay || !pXCloseDisplay || !pXInternAtom || !pXQueryTree || !pXGetClassHint || !pXGetWindowProperty ||
+        !pXChangeProperty || !pXFree || !pXFlush)
+        return;
+    const char* sgi = std::getenv("SteamGameId");
+    const std::string appClass = std::string("steam_app_") + (sgi && *sgi ? sgi : std::to_string(appId));
+    std::thread([=] {
+        Display* d = pXOpenDisplay(nullptr);
+        if (!d) return;
+        Atom steamGame = pXInternAtom(d, "STEAM_GAME", False);
+        auto isGame = [&](Window w) {
+            XClassHint ch{};
+            if (!pXGetClassHint(d, w, &ch)) return false;
+            std::string s = std::string(ch.res_name ? ch.res_name : "") + " " + (ch.res_class ? ch.res_class : "");
+            if (ch.res_name) pXFree(ch.res_name);
+            if (ch.res_class) pXFree(ch.res_class);
+            std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+            // Proton names the class steam_app_<SteamGameId>; plain Wine uses the exe name
+            return s.find("slavezero") != std::string::npos || s.find(appClass) != std::string::npos;
+        };
+        auto tag = [&](Window w) {
+            Atom type = 0;
+            int fmt = 0;
+            unsigned long n = 0, after = 0;
+            unsigned char* data = nullptr;
+            bool has = pXGetWindowProperty(d, w, steamGame, 0, 1, False, XA_CARDINAL, &type, &fmt, &n, &after, &data) == Success &&
+                       type == XA_CARDINAL && n == 1 && data && *reinterpret_cast<unsigned long*>(data) == appId;
+            if (data) pXFree(data);
+            if (has) return;
+            unsigned long v = appId;
+            pXChangeProperty(d, w, steamGame, XA_CARDINAL, 32, PropModeReplace, reinterpret_cast<unsigned char*>(&v), 1);
+        };
+        std::function<void(Window, int)> walk = [&](Window w, int depth) {
+            Window root = 0, parent = 0, *kids = nullptr;
+            unsigned int nk = 0;
+            if (!pXQueryTree(d, w, &root, &parent, &kids, &nk)) return;
+            for (unsigned int i = 0; i < nk; ++i) {
+                if (isGame(kids[i])) tag(kids[i]);
+                else if (depth < 2) walk(kids[i], depth + 1);  // window managers may reparent
+            }
+            if (kids) pXFree(kids);
+        };
+        Window root = DefaultRootWindow(d);
+        // poll while the game runs (plus 30 s, in case the first process hands off to another)
+        for (int idle = 0; idle < 60; ++idle) {
+            if (g_games > 0) idle = 0;
+            walk(root, 0);
+            pXFlush(d);
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        pXCloseDisplay(d);
+    }).detach();
+}
 
 namespace platform {
 
@@ -327,6 +404,7 @@ bool Launch(const LaunchOptions& o, std::string& err) {
         waitpid(pid, nullptr, 0);
         --g_games;
     }).detach();
+    if (InsideGamescope()) TagGameWindowsForSteam();
     return true;
 }
 
