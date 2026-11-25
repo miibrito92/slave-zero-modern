@@ -37,6 +37,8 @@ struct Config {
     int width = 0, height = 0;  // window client size when windowed (0 = 1920x1080)
     int vsync = 1;
     int widescreen = 1;  // hor+ widescreen (patches the engine's frustum width in memory)
+    int hudEdges = 0;    // widescreen: move corner HUD elements to the screen edges
+    int menuPillarbox = 1;  // widescreen: show menus/intro as 4:3
     int trueColor = 1;   // ask the engine for 32-bit source textures
     int frameLimit = 0;
     int msaa = 4;
@@ -90,6 +92,8 @@ static void LoadConfig() {
     c.height = GetPrivateProfileIntA("Display", "Height", c.height, path);
     c.vsync = GetPrivateProfileIntA("Display", "VSync", c.vsync, path);
     c.widescreen = GetPrivateProfileIntA("Display", "Widescreen", c.widescreen, path);
+    c.hudEdges = GetPrivateProfileIntA("Display", "HudAtEdges", c.hudEdges, path);
+    c.menuPillarbox = GetPrivateProfileIntA("Display", "MenusIn4x3", c.menuPillarbox, path);
     c.trueColor = GetPrivateProfileIntA("Quality", "TrueColor", c.trueColor, path);
     c.frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", c.frameLimit, path);
     c.msaa = GetPrivateProfileIntA("Quality", "MSAA", c.msaa, path);
@@ -127,6 +131,15 @@ static void LoadConfig() {
 
 // Horizontal widening factor relative to 4:3 (1.0 = no widescreen).
 static float g_wideK = 1.0f;
+static bool g_exeKnown = false;  // SlaveZero.exe matched the build these addresses come from
+static bool g_inMenu = false;    // current level is the front end / intro (m00_*)
+
+// The exe keeps the current level's short name (e.g. "m00_startup", "M01_A") at 0x4dc2c4.
+static void UpdateLevelState() {
+    if (!g_exeKnown) return;
+    const char* name = (const char*)0x4dc2c4;
+    g_inMenu = (name[0] == 'm' || name[0] == 'M') && name[1] == '0' && name[2] == '0' && name[3] == '_';
+}
 
 typedef void(__cdecl* SetupPerspFn)(int* persp);
 static const uintptr_t kSetupPersp = 0x40c750;
@@ -149,6 +162,7 @@ static bool InstallWidescreenHook() {
     MEMORY_BASIC_INFORMATION mbi;
     if (!VirtualQuery((void*)kSetupPersp, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return false;
     if (memcmp((void*)kSetupPersp, kProlog, sizeof kProlog) != 0) return false;
+    g_exeKnown = true;
     for (uintptr_t site : kSetupPerspCalls) {
         const uint8_t* b = (const uint8_t*)site;
         if (b[0] != 0xe8 || site + 5 + *(const int32_t*)(b + 1) != kSetupPersp) return false;
@@ -758,9 +772,25 @@ static bool UploadLightmap(const void* l, Pls* p, const void* pixels) {
     return true;
 }
 
+static const char* TexName(const void* t) {
+    const char* n = (const char*)t;
+    for (int i = 0; i < 32; ++i) {
+        if (n[i] == 0) return i ? n : "";
+        if ((unsigned char)n[i] < 32 || (unsigned char)n[i] > 126) return "";
+    }
+    return "";
+}
+
 // Texture SRV for a primitive / blit, resolving animation frames.
 static ID3D11ShaderResourceView* TextureSrv(const void* t, const void* frameIdx, bool advance) {
     if (!t) return nullptr;
+    static bool logTex = GetEnvironmentVariableA("SZM_LOGTEX", nullptr, 0) > 0;
+    if (logTex) {
+        Pls* p0 = (Pls*)F<uint8_t*>(t, tex::Pls);
+        if (p0 && p0->magic == kPlsMagic && !p0->srv)
+            Log("tex %-32s %s %ux%u flags %08x frames %u", TexName(t), advance ? "world" : "blit ",
+                F<uint32_t>(t, tex::Width), F<uint32_t>(t, tex::Height), F<uint32_t>(t, tex::Flags), F<uint16_t>(t, tex::Frames));
+    }
     uint8_t* plsArr = F<uint8_t*>(t, tex::Pls);
     if (!plsArr) return nullptr;
     uint32_t frames = F<uint16_t>(t, tex::Frames);
@@ -1032,6 +1062,9 @@ EXPORT int hwAPI_ClearViewSurface(void* rcp, uint32_t color) {
 EXPORT void hwAPI_BeginFrame(void* rcp) {
     if (!R) return;
     R->decalLevel = 0;
+    bool wasMenu = g_inMenu;
+    UpdateLevelState();
+    if (wasMenu != g_inMenu) Log("level state: %s", g_inMenu ? "front end" : "mission");
 }
 
 EXPORT void hwAPI_ProcessBatchOfPrimatives(void* rcp, uint8_t* pr, int /*unused*/, int /*flush*/) {
@@ -1136,6 +1169,14 @@ EXPORT int hwAPI_BlitPoly(void* rcp, void* t, void* frameIdx, float x, float y, 
         // full-screen overlays (fades, backdrops) span the whole widescreen area
         px = W * 0.5f * (1.0f - g_wideK);
         pw = W * g_wideK;
+    } else if (g_wideK > 1.0f && g_cfg.hudEdges && !g_inMenu) {
+        // corner HUD (gauges and their numbers) moves out to the real screen edges;
+        // reticules and lock-on markers stay put because they track 3D positions
+        const char* n = TexName(t);
+        bool hud = _strnicmp(n, "i_hud", 5) == 0;
+        bool glyph = _strnicmp(n, "i_font", 6) == 0 && y > 0.70f;
+        float cx = x + w * 0.5f;
+        if ((hud || glyph) && (cx < 0.25f || cx > 0.75f)) px += (cx < 0.5f ? -1.0f : 1.0f) * W * 0.5f * (g_wideK - 1.0f);
     }
     uint32_t tf = F<uint32_t>(t, tex::Flags);
     uint32_t pf = PfConstAlpha | (tf & TfAlpha ? PfTexAlphaA : 0) | (tf & TfAlpha2 ? PfTexAlphaB : 0);
@@ -1277,7 +1318,8 @@ EXPORT int hwAPI_ShowViewSurface(void* rcp) {
     } pc = {1.0f / g, g_cfg.filter == 0 ? g_cfg.sharpen : g_cfg.sharpen * 0.5f, 1.0f / R->sceneW, 1.0f / R->sceneH,
             R->presentVp.Width, R->presentVp.Height, R->presentVp.TopLeftX, R->presentVp.TopLeftY,
             (float)g_cfg.filter, g_cfg.filterStrength, (float)g_cfg.scanlines, (float)(R->frame % 100000) / 60.0f,
-            R->virtW * g_wideK, (float)R->virtH, {0, 0}};
+            R->virtW * g_wideK, (float)R->virtH,
+            {(g_inMenu && g_cfg.menuPillarbox && g_wideK > 1.0f) ? 0.5f / g_wideK : 0.0f, 0}};
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(R->ctx->Map(R->postCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
         memcpy(m.pData, &pc, sizeof pc);

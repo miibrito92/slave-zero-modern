@@ -77,7 +77,8 @@ cbuffer Post : register(b0) {
     float  gLines;     // emulated scanline count
     float  gTime;
     float2 gVirtual;   // virtual (engine) resolution covered by the scene, e.g. 853x480
-    float2 gPad;
+    float  gPillar;    // >0: black outside |uv.x - 0.5| < gPillar (4:3 menus in widescreen)
+    float  gPad;
 };
 Texture2D    gScene : register(t0);
 SamplerState gLin   : register(s0);
@@ -120,6 +121,7 @@ float4 ps_post(PO i) : SV_Target {
     float s = gStrength;
     float2 uv = i.uv;
     float2 px = i.pos.xy - gOutOrigin;  // output pixel inside the viewport
+    if (gPillar > 0.0 && abs(uv.x - 0.5) > gPillar) return float4(0, 0, 0, 1);
 
     if (mode == 3) {
         uv = Warp(uv);

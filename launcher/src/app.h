@@ -14,6 +14,8 @@ struct Settings {
     int winW = 1920, winH = 1080;
     float renderScale = 1.0f;
     bool widescreen = true;
+    bool hudEdges = false;
+    bool menus4x3 = true;
     bool vsync = true;
     int frameLimit = 0;
     int msaa = 4;

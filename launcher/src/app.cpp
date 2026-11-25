@@ -129,6 +129,8 @@ void App::LoadSettings() {
     s_.vsync = m.GetInt("Display", "VSync", 1) != 0;
     s_.frameLimit = m.GetInt("Display", "FrameLimit", d.frameLimit);
     s_.widescreen = m.GetInt("Display", "Widescreen", 1) != 0;
+    s_.hudEdges = m.GetInt("Display", "HudAtEdges", 0) != 0;
+    s_.menus4x3 = m.GetInt("Display", "MenusIn4x3", 1) != 0;
     s_.msaa = m.GetInt("Quality", "MSAA", d.msaa);
     s_.renderScale = m.GetFloat("Quality", "RenderScale", d.renderScale);
     s_.aniso = m.GetInt("Quality", "Anisotropy", d.aniso);
@@ -171,6 +173,8 @@ bool App::SaveSettings() {
         m.SetInt("Display", "VSync", s_.vsync);
         m.SetInt("Display", "FrameLimit", s_.frameLimit);
         m.SetInt("Display", "Widescreen", s_.widescreen);
+        m.SetInt("Display", "HudAtEdges", s_.hudEdges);
+        m.SetInt("Display", "MenusIn4x3", s_.menus4x3);
         m.SetInt("Quality", "MSAA", s_.msaa);
         m.SetFloat("Quality", "RenderScale", s_.renderScale, 3);
         m.SetInt("Quality", "Anisotropy", s_.aniso);
@@ -494,6 +498,16 @@ void App::DrawDisplayTab() {
     int wide = s_.widescreen ? 0 : 1;
     const char* aspects[] = {"Widescreen  (wider field of view, Hor+)", "Original 4:3  (black side bars)"};
     if (ImGui::Combo("##aspect", &wide, aspects, 2)) { s_.widescreen = wide == 0; dirty_ = true; }
+    ImGui::BeginDisabled(!s_.widescreen);
+    Label("HUD position");
+    int hud = s_.hudEdges ? 1 : 0;
+    const char* hudn[] = {"Original  (4:3 area)", "Screen edges"};
+    if (ImGui::Combo("##hud", &hud, hudn, 2)) { s_.hudEdges = hud == 1; dirty_ = true; }
+    Help("Moves the health and ammo gauges to the corners of a widescreen display. The crosshair and lock-on markers are unaffected.");
+    Label("Menus in 4:3");
+    if (ImGui::Checkbox("##menus43", &s_.menus4x3)) dirty_ = true;
+    Help("The main menu and intro were only built for a 4:3 view; this shows them with side bars instead of empty space.");
+    ImGui::EndDisabled();
 
     Section("Frame rate");
     Label("VSync");
