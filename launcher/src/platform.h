@@ -51,4 +51,7 @@ void Poll();  // deliver pending async results
 // on Linux the new process closes its inherited DRM descriptor, and amdgpu waits for the GPU queue
 // to drain, which never happens while frames keep coming.
 bool SpawnInProgress();
+// True when the launcher itself runs inside gamescope (e.g. Steam Game Mode); a nested gamescope
+// would draw where the session never shows it.
+bool InsideGamescope();
 }  // namespace platform

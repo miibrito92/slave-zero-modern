@@ -691,7 +691,12 @@ void App::DrawLinuxTab() {
     Section("Extras");
     Label("Gamescope");
     if (ImGui::Checkbox("##gs", &s_.gamescope)) dirty_ = true;
-    Help("Runs the game inside Valve's gamescope compositor at the chosen resolution and refresh rate.");
+    Help("Runs the game inside Valve's gamescope compositor at the chosen resolution and refresh rate. "
+         "Skipped automatically when the launcher already runs inside gamescope (Steam Game Mode).");
+    if (s_.gamescope && platform::InsideGamescope()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(already inside gamescope - not needed)");
+    }
     Label("MangoHud overlay");
     if (ImGui::Checkbox("##mh", &s_.mangohud)) dirty_ = true;
     Label("GameMode");

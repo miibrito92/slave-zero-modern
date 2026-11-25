@@ -126,6 +126,11 @@ namespace platform {
 
 const char* Name() { return "Linux"; }
 bool IsWindows() { return false; }
+bool InsideGamescope() {
+    const char* gs = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+    const char* de = std::getenv("XDG_CURRENT_DESKTOP");
+    return (gs && *gs) || (de && std::strcmp(de, "gamescope") == 0);
+}
 
 fs::path ConfigDir() {
     const char* x = std::getenv("XDG_CONFIG_HOME");
@@ -239,7 +244,7 @@ bool Launch(const LaunchOptions& o, std::string& err) {
     fs::path exe = o.gameDir / "SlaveZero.exe";
     if (o.prefix.empty()) { err = "the game folder is not inside a Wine prefix"; return false; }
 
-    if (o.gamescope) {
+    if (o.gamescope && !InsideGamescope()) {
         fs::path gs = FindInPath("gamescope");
         if (gs.empty()) { err = "gamescope is not installed"; return false; }
         argv = {gs.string(), "-W", std::to_string(o.outW), "-H", std::to_string(o.outH), "-w", std::to_string(o.outW),
