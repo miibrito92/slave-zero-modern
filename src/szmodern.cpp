@@ -22,6 +22,12 @@
 #include "engine.h"
 #include "shaders.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_HDR
+#define STBI_NO_LINEAR
+#include "third_party/stb_image.h"
+
 #define EXPORT extern "C" __declspec(dllexport)
 
 template <class T> static void SafeRelease(T*& p) {
@@ -40,6 +46,8 @@ struct Config {
     int hudEdges = 0;    // widescreen: move corner HUD elements to the screen edges
     int menuPillarbox = 1;  // widescreen: show menus/intro as 4:3
     int trueColor = 1;   // ask the engine for 32-bit source textures
+    int texturePack = 1; // load szmodern/textures/<name>.png replacements when present
+    int normalMaps = 1;  // per-pixel lighting where the pack has <name>_n.png
     int frameLimit = 0;
     int msaa = 4;
     float renderScale = 1.0f;
@@ -95,6 +103,8 @@ static void LoadConfig() {
     c.hudEdges = GetPrivateProfileIntA("Display", "HudAtEdges", c.hudEdges, path);
     c.menuPillarbox = GetPrivateProfileIntA("Display", "MenusIn4x3", c.menuPillarbox, path);
     c.trueColor = GetPrivateProfileIntA("Quality", "TrueColor", c.trueColor, path);
+    c.texturePack = GetPrivateProfileIntA("Quality", "TexturePack", c.texturePack, path);
+    c.normalMaps = GetPrivateProfileIntA("Quality", "NormalMaps", c.normalMaps, path);
     c.frameLimit = GetPrivateProfileIntA("Display", "FrameLimit", c.frameLimit, path);
     c.msaa = GetPrivateProfileIntA("Quality", "MSAA", c.msaa, path);
     c.renderScale = IniFloat(path, "Quality", "RenderScale", c.renderScale);
@@ -192,6 +202,8 @@ struct Pls {
     uint32_t frame;
     uint32_t w, h;
     int32_t liveIndex;
+    ID3D11Texture2D* nrmTex;  // optional normal map from the texture pack
+    ID3D11ShaderResourceView* nrm;
 };
 static_assert(sizeof(Pls) <= kPlsStride, "PLS record too large");
 
@@ -204,12 +216,13 @@ struct Vtx {
     float r, g, b, a;
     float u0, v0, u1, v1;
     uint32_t flags;
+    float cx, cy, cz;  // camera-space position (per-pixel lighting)
 };
 
 enum : uint32_t {
     ModeVC = 0, ModeTex = 1, ModeTexVC = 2, ModeTexLM = 3,
     AlphaOne = 0 << 2, AlphaConst = 1 << 2, AlphaTex = 2 << 2, AlphaTexConst = 3 << 2,
-    FlagCutout = 16, FlagAlphaTest = 32,
+    FlagCutout = 16, FlagAlphaTest = 32, FlagNormal = 64,
 };
 
 enum BlendMode { BlendOpaque, BlendAlpha, BlendCount };
@@ -287,6 +300,7 @@ struct Renderer {
     int savedFog = 0;
     int decalLevel = 0;
     float gamma = 1.0f;
+    float light[3] = {0.0f, 1.0f, 0.0f};  // overhead light in camera space
     int virtW = 640, virtH = 480;
     bool frameCbDirty = true;
     uint64_t frame = 0;
@@ -524,8 +538,9 @@ static bool CreateDevice() {
         {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(Vtx, r), D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, offsetof(Vtx, u0), D3D11_INPUT_PER_VERTEX_DATA, 0},
         {"TEXCOORD", 1, DXGI_FORMAT_R32_UINT, 0, offsetof(Vtx, flags), D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 2, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Vtx, cx), D3D11_INPUT_PER_VERTEX_DATA, 0},
     };
-    R->dev->CreateInputLayout(ie, 4, vsb->GetBufferPointer(), vsb->GetBufferSize(), &R->layout);
+    R->dev->CreateInputLayout(ie, 5, vsb->GetBufferPointer(), vsb->GetBufferSize(), &R->layout);
     SafeRelease(vsb);
     SafeRelease(psb);
     SafeRelease(pvb);
@@ -536,7 +551,7 @@ static bool CreateDevice() {
     bd.Usage = D3D11_USAGE_DYNAMIC;
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    bd.ByteWidth = 32;
+    bd.ByteWidth = 48;
     R->dev->CreateBuffer(&bd, nullptr, &R->frameCb);
     bd.ByteWidth = 64;
     R->dev->CreateBuffer(&bd, nullptr, &R->postCb);
@@ -674,6 +689,8 @@ static void PlsRelease(Pls* p) {
     if (p->magic != kPlsMagic) return;
     SafeRelease(p->srv);
     SafeRelease(p->tex);
+    SafeRelease(p->nrm);
+    SafeRelease(p->nrmTex);
     if (p->liveIndex >= 0 && R) {
         uint32_t i = (uint32_t)p->liveIndex;
         if (i < R->live.size() && R->live[i] == p) {
@@ -694,7 +711,63 @@ static void PlsInit(Pls* p, bool isLightmap, const void* owner, uint32_t frame) 
     p->liveIndex = -1;
 }
 
+static const char* TexName(const void* t);
+
+// Loads <game>/szmodern/textures/<file>.png into an RGBA8 texture with a full mip chain.
+static bool LoadPackPng(const char* file, ID3D11Texture2D** texOut, ID3D11ShaderResourceView** srvOut, uint32_t* w, uint32_t* h) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s\\szmodern\\textures\\%s.png", g_gameDir, file);
+    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) return false;
+    int iw = 0, ih = 0, comp = 0;
+    stbi_uc* px = stbi_load(path, &iw, &ih, &comp, 4);
+    if (!px) { Log("pack: cannot decode %s", path); return false; }
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = iw;
+    td.Height = ih;
+    td.MipLevels = Log2i(std::max(iw, ih)) + 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    bool ok = SUCCEEDED(R->dev->CreateTexture2D(&td, nullptr, texOut));
+    if (ok) {
+        R->ctx->UpdateSubresource(*texOut, 0, nullptr, px, iw * 4, 0);
+        ok = SUCCEEDED(R->dev->CreateShaderResourceView(*texOut, nullptr, srvOut));
+        if (ok) R->ctx->GenerateMips(*srvOut);
+    }
+    stbi_image_free(px);
+    if (w) *w = iw;
+    if (h) *h = ih;
+    return ok;
+}
+
+static bool UploadFromPack(const void* t, Pls* p) {
+    if (!g_cfg.texturePack) return false;
+    char name[64];
+    snprintf(name, sizeof name, "%s", TexName(t));
+    if (!name[0]) return false;
+    for (char* c = name; *c; ++c) *c = (char)tolower((unsigned char)*c);
+    char file[80];
+    if (F<uint16_t>(t, tex::Frames) > 1) snprintf(file, sizeof file, "%s_f%u", name, p->frame);
+    else snprintf(file, sizeof file, "%s", name);
+    if (!LoadPackPng(file, &p->tex, &p->srv, &p->w, &p->h)) {
+        SafeRelease(p->srv);
+        SafeRelease(p->tex);
+        return false;
+    }
+    if (g_cfg.normalMaps) {
+        snprintf(file, sizeof file, "%s_n", name);
+        if (!LoadPackPng(file, &p->nrmTex, &p->nrm, nullptr, nullptr)) { SafeRelease(p->nrm); SafeRelease(p->nrmTex); }
+    }
+    PlsTrack(p);
+    ++R->statUploads;
+    return true;
+}
+
 static bool UploadTexture(const void* t, Pls* p) {
+    if (UploadFromPack(t, p)) return true;
     uint32_t w = F<uint32_t>(t, tex::Width), h = F<uint32_t>(t, tex::Height);
     uint32_t flags = F<uint32_t>(t, tex::Flags);
     const uint8_t* data = F<const uint8_t*>(t, tex::Data);
@@ -782,7 +855,7 @@ static const char* TexName(const void* t) {
 }
 
 // Texture SRV for a primitive / blit, resolving animation frames.
-static ID3D11ShaderResourceView* TextureSrv(const void* t, const void* frameIdx, bool advance) {
+static ID3D11ShaderResourceView* TextureSrv(const void* t, const void* frameIdx, bool advance, Pls** plsOut = nullptr) {
     if (!t) return nullptr;
     static bool logTex = GetEnvironmentVariableA("SZM_LOGTEX", nullptr, 0) > 0;
     if (logTex) {
@@ -803,6 +876,7 @@ static ID3D11ShaderResourceView* TextureSrv(const void* t, const void* frameIdx,
     Pls* p = (Pls*)(plsArr + frame * kPlsStride);
     if (p->magic != kPlsMagic) return nullptr;
     if (!p->srv && !UploadTexture(t, p)) return nullptr;
+    if (plsOut) *plsOut = p;
     return p->srv;
 }
 
@@ -834,9 +908,9 @@ static void UpdateFrameCb() {
     if (!R->frameCbDirty) return;
     // virtual pixel -> NDC: x' = (x - cx) * ax, y' = (cy - y) * ay; the 640x480 virtual
     // screen occupies the centre 4:3 of a wider scene when widescreen is on
-    struct { float ax, ay, cx, cy, zn, biasStep, lmScale, alphaRef; } cb = {
+    struct { float ax, ay, cx, cy, zn, biasStep, lmScale, alphaRef, lx, ly, lz, pad; } cb = {
         2.0f / (R->virtW * g_wideK), 2.0f / R->virtH, R->virtW * 0.5f, R->virtH * 0.5f,
-        1.0f / 65536.0f, g_cfg.decalBias, g_cfg.lightmapScale, 0.5f / 255.0f};
+        1.0f / 65536.0f, g_cfg.decalBias, g_cfg.lightmapScale, 0.5f / 255.0f, R->light[0], R->light[1], R->light[2], 0};
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(R->ctx->Map(R->frameCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
         memcpy(m.pData, &cb, sizeof cb);
@@ -1065,6 +1139,25 @@ EXPORT void hwAPI_BeginFrame(void* rcp) {
     bool wasMenu = g_inMenu;
     UpdateLevelState();
     if (wasMenu != g_inMenu) Log("level state: %s", g_inMenu ? "front end" : "mission");
+    // overhead light direction in camera space, via the engine's own camera transform
+    typedef void*(__cdecl * GetCameraFn)();
+    typedef void(__cdecl * XformFn)(const float*, float*, void*);
+    GetCameraFn getCam = F<GetCameraFn>(rcp, 0x274);
+    XformFn xform = F<XformFn>(rcp, 0x270);
+    if (getCam && xform) {
+        if (void* cam = getCam()) {
+            const float sky[3] = {0.35e6f, 1.0e6f, 0.25e6f};
+            float o[3];
+            xform(sky, o, cam);
+            float len = sqrtf(o[0] * o[0] + o[1] * o[1] + o[2] * o[2]);
+            if (len > 0.0f) {
+                R->light[0] = o[0] / len;
+                R->light[1] = o[1] / len;
+                R->light[2] = o[2] / len;
+                R->frameCbDirty = true;
+            }
+        }
+    }
 }
 
 EXPORT void hwAPI_ProcessBatchOfPrimatives(void* rcp, uint8_t* pr, int /*unused*/, int /*flush*/) {
@@ -1094,8 +1187,9 @@ EXPORT void hwAPI_ProcessBatchOfPrimatives(void* rcp, uint8_t* pr, int /*unused*
     void* t = F<void*>(pr, prim::Tex);
     GpuState st = {};
     st.samp = SampWorld;
+    Pls* texPls = nullptr;
     if (mode != ModeVC) {
-        st.t0 = TextureSrv(t, F<void*>(pr, prim::FrameIdx), true);
+        st.t0 = TextureSrv(t, F<void*>(pr, prim::FrameIdx), true, &texPls);
         if (!st.t0) return;
     }
     if (mode == ModeTexLM) {
@@ -1108,6 +1202,10 @@ EXPORT void hwAPI_ProcessBatchOfPrimatives(void* rcp, uint8_t* pr, int /*unused*
     if (pf2 & P2Decal) bias = (float)(++R->decalLevel);
 
     uint32_t flags = mode | AlphaBits(pf, mode != ModeVC);
+    if (texPls && texPls->nrm && (mode == ModeTex || mode == ModeTexVC)) {
+        st.t1 = texPls->nrm;
+        flags |= FlagNormal;
+    }
     float ca = (pf & PfConstAlpha) ? (pf & 0xff) / 255.0f : 1.0f;
 
     void* pp = F<void*>(rcp, rc::Persp);
@@ -1135,6 +1233,9 @@ EXPORT void hwAPI_ProcessBatchOfPrimatives(void* rcp, uint8_t* pr, int /*unused*
         o.u1 = F<float>(v, vtx::LU);
         o.v1 = F<float>(v, vtx::LV);
         o.flags = flags;
+        o.cx = F<float>(v, vtx::X);
+        o.cy = F<float>(v, vtx::Y);
+        o.cz = F<float>(v, vtx::Z);
         oowSum += oow;
     }
     ++R->statPolys;
@@ -1188,7 +1289,7 @@ EXPORT int hwAPI_BlitPoly(void* rcp, void* t, void* frameIdx, float x, float y, 
     const float pos[4][2] = {{px, py}, {px, py + ph}, {px + pw, py + ph}, {px + pw, py}};
     const float uv[4][2] = {{u0, v1}, {u0, v0}, {u1, v0}, {u1, v1}};
     for (int i = 0; i < 4; ++i) {
-        q[i] = {pos[i][0], pos[i][1], 1.0f, 0.0f, r, g, b, a, uv[i][0], uv[i][1], 0, 0, flags};
+        q[i] = {pos[i][0], pos[i][1], 1.0f, 0.0f, r, g, b, a, uv[i][0], uv[i][1], 0, 0, flags, 0, 0, 1};
     }
     QueueDeferred(R->blits, depth != 0.0f ? 1.0f / depth : 0.0f, st, q, 4, 0);
     return 1;

@@ -136,6 +136,8 @@ void App::LoadSettings() {
     s_.aniso = m.GetInt("Quality", "Anisotropy", d.aniso);
     s_.mips = m.GetInt("Quality", "GenerateMipmaps", 1) != 0;
     s_.trueColor = m.GetInt("Quality", "TrueColor", 1) != 0;
+    s_.texturePack = m.GetInt("Quality", "TexturePack", 1) != 0;
+    s_.normalMaps = m.GetInt("Quality", "NormalMaps", 1) != 0;
     s_.lightmapScale = m.GetFloat("Quality", "LightmapScale", d.lightmapScale);
     s_.cutout = m.GetInt("Quality", "OpaqueCutout", 1) != 0;
     s_.sharpen = m.GetFloat("Post", "Sharpen", d.sharpen);
@@ -180,6 +182,8 @@ bool App::SaveSettings() {
         m.SetInt("Quality", "Anisotropy", s_.aniso);
         m.SetInt("Quality", "GenerateMipmaps", s_.mips);
         m.SetInt("Quality", "TrueColor", s_.trueColor);
+        m.SetInt("Quality", "TexturePack", s_.texturePack);
+        m.SetInt("Quality", "NormalMaps", s_.normalMaps);
         m.SetFloat("Quality", "LightmapScale", s_.lightmapScale, 2);
         m.SetInt("Quality", "OpaqueCutout", s_.cutout);
         m.SetFloat("Post", "Sharpen", s_.sharpen, 2);
@@ -556,6 +560,19 @@ void App::DrawGraphicsTab() {
     }
     Label("Sharpening");
     if (ImGui::SliderFloat("##sharpen", &s_.sharpen, 0.0f, 1.0f, s_.sharpen <= 0.001f ? "Off" : "%.2f")) dirty_ = true;
+    Label("HD texture pack");
+    {
+        std::error_code ec;
+        bool havePack = gameValid_ && fs::exists(gameDir_ / "szmodern" / "textures", ec);
+        ImGui::BeginDisabled(!havePack);
+        if (ImGui::Checkbox("##pack", &s_.texturePack)) dirty_ = true;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextColored(kMuted, havePack ? "AI-upscaled 4x textures (szmodern/textures)" : "not built yet");
+    }
+    Label("Per-pixel lighting");
+    if (ImGui::Checkbox("##nrm", &s_.normalMaps)) dirty_ = true;
+    Help("Lights surfaces that have normal maps in the texture pack (the player's mech) per pixel, as the original bump-mapping path intended.");
     Label("True-colour textures");
     if (ImGui::Checkbox("##tc", &s_.trueColor)) dirty_ = true;
     Help("Keeps the game's 32-bit textures (effects, glows) at full precision instead of 16-bit.");

@@ -22,6 +22,8 @@ struct Settings {
     int aniso = 16;
     bool mips = true;
     bool trueColor = true;
+    bool texturePack = true;
+    bool normalMaps = true;
     float lightmapScale = 2.0f;
     bool cutout = true;
     float sharpen = 0.3f;

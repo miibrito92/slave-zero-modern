@@ -14,6 +14,8 @@ cbuffer Frame : register(b0) {
     float  gBiasStep;
     float  gLightmapScale;
     float  gAlphaRef;
+    float3 gLight;   // overhead light direction, camera space
+    float  gPad;
 };
 Texture2D    gTex0  : register(t0);
 Texture2D    gTex1  : register(t1);
@@ -25,12 +27,14 @@ struct VSIn {
     float4 col   : COLOR;
     float4 uv    : TEXCOORD0;  // base uv, lightmap uv
     uint   flags : TEXCOORD1;
+    float3 cpos  : TEXCOORD2;  // camera-space position
 };
 struct VSOut {
     float4 pos : SV_Position;
     float4 col : COLOR;
     float4 uv  : TEXCOORD0;
     nointerpolation uint flags : TEXCOORD1;
+    float3 cpos : TEXCOORD2;
 };
 
 VSOut vs_main(VSIn i) {
@@ -41,6 +45,7 @@ VSOut vs_main(VSIn i) {
     o.col = i.col;
     o.uv = i.uv;
     o.flags = i.flags;
+    o.cpos = i.cpos;
     return o;
 }
 
@@ -52,6 +57,25 @@ float4 ps_main(VSOut i) : SV_Target {
     float3 rgb = i.col.rgb;
     if (mode == 1u) rgb = t.rgb;
     else if (mode == 2u) rgb = t.rgb * i.col.rgb;
+    if ((i.flags & 64u) != 0u) {
+        // per-pixel lighting from a normal map, tangent frame from screen derivatives
+        float3 nt = gTex1.Sample(gSamp0, i.uv.xy).xyz * 2.0 - 1.0;
+        float3 P = i.cpos;
+        float3 dp1 = ddx(P), dp2 = ddy(P);
+        float2 du1 = ddx(i.uv.xy), du2 = ddy(i.uv.xy);
+        float3 N = normalize(cross(dp1, dp2));
+        if (dot(N, P) > 0.0) N = -N;
+        float3 dp2perp = cross(dp2, N), dp1perp = cross(N, dp1);
+        float3 T = dp2perp * du1.x + dp1perp * du2.x;
+        float3 B = dp2perp * du1.y + dp1perp * du2.y;
+        float inv = rsqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+        float3 Nw = normalize(T * inv * nt.x + B * inv * nt.y + N * nt.z);
+        float3 L = normalize(gLight);
+        float3 V = normalize(-P);
+        float diff = saturate(dot(Nw, L));
+        float spec = pow(saturate(dot(Nw, normalize(L + V))), 28.0);
+        rgb = rgb * (0.38 + 0.9 * diff) + spec * 0.30 * (0.4 + rgb);
+    }
     else if (mode == 3u) rgb = t.rgb * lm * gLightmapScale;
     float a = 1.0;
     if (asrc == 1u) a = i.col.a;
