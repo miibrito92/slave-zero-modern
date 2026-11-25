@@ -335,6 +335,7 @@ bool Launch(const LaunchOptions& o, std::string& err) {
         if (!gm.empty()) argv.push_back(gm.string());
     }
     if (o.mangohud) env.push_back({"MANGOHUD", "1"});
+    env.push_back({"SZM_LAUNCHER", "1"});  // the in-game menu can ask us to restart the game
 
     if (o.runner.kind == Runner::Proton) {
         fs::path umu = FindInPath("umu-run");

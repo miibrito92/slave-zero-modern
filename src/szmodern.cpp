@@ -19,7 +19,9 @@
 #include <algorithm>
 #include <vector>
 
+#include "config.h"
 #include "engine.h"
+#include "overlay.h"
 #include "shaders.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -38,43 +40,13 @@ template <class T> static void SafeRelease(T*& p) {
 // Config + logging
 // ============================================================================
 
-struct Config {
-    int windowed = 0;           // 0 = borderless fullscreen on the monitor, 1 = normal window
-    int width = 0, height = 0;  // window client size when windowed (0 = 1920x1080)
-    int vsync = 1;
-    int widescreen = 1;  // hor+ widescreen (patches the engine's frustum width in memory)
-    int hudEdges = 0;    // widescreen: move corner HUD elements to the screen edges
-    int menuPillarbox = 1;  // widescreen: show menus/intro as 4:3
-    int trueColor = 1;   // ask the engine for 32-bit source textures
-    int texturePack = 1; // load szmodern/textures/<name>.png replacements when present
-    int normalMaps = 1;  // per-pixel lighting where the pack has <name>_n.png
-    int frameLimit = 0;
-    int msaa = 4;
-    float renderScale = 1.0f;
-    int anisotropy = 16;
-    int generateMips = 1;
-    float lightmapScale = 2.0f;
-    int opaqueCutout = 1;
-    float sharpen = 0.3f;
-    int filter = 0;            // 0 none, 1 scanlines, 2 CRT, 3 CRT curved, 4 retro pixels, 5 VHS
-    float filterStrength = 0.7f;
-    int scanlines = 480;
-    float gammaOverride = 0.0f;
-    float decalBias = 1.0f / 4096.0f;
-    int log = 1;
-    // test automation (environment): screenshot frames, exit frame
-    std::vector<int> shotFrames;
-    int exitFrame = 0;
-    struct Key { int frame; int vk; int hold; };
-    std::vector<Key> keys;  // SZM_KEYS="frame:vk[:hold],..." (vk hex; 01/02 = mouse buttons), tests only
-};
-
-static Config g_cfg;
-static char g_gameDir[MAX_PATH];
+Config g_cfg;
+char g_gameDir[MAX_PATH];
+char g_dllPath[MAX_PATH];
 static char g_dllName[MAX_PATH];
 static FILE* g_log;
 
-static void Log(const char* fmt, ...) {
+void Log(const char* fmt, ...) {
     if (!g_log) return;
     va_list ap;
     va_start(ap, fmt);
@@ -118,6 +90,12 @@ static void LoadConfig() {
     c.scanlines = std::min(std::max((int)GetPrivateProfileIntA("Post", "Scanlines", c.scanlines, path), 120), 1080);
     c.gammaOverride = IniFloat(path, "Post", "Gamma", c.gammaOverride);
     c.log = GetPrivateProfileIntA("Debug", "Log", c.log, path);
+    char key[16];
+    GetPrivateProfileStringA("Overlay", "Key", "F10", key, sizeof key, path);
+    if ((key[0] == 'F' || key[0] == 'f') && atoi(key + 1) >= 1 && atoi(key + 1) <= 12) c.overlayKey = VK_F1 + atoi(key + 1) - 1;
+    c.overlayHint = GetPrivateProfileIntA("Overlay", "ShowHint", c.overlayHint, path);
+    c.pauseInOverlay = GetPrivateProfileIntA("Overlay", "PauseGame", c.pauseInOverlay, path);
+    c.startDirectly = GetPrivateProfileIntA("Launcher", "StartDirectly", c.startDirectly, path);
 
     c.renderScale = std::min(std::max(c.renderScale, 0.25f), 4.0f);
     c.anisotropy = std::min(std::max(c.anisotropy, 1), 16);
@@ -133,6 +111,45 @@ static void LoadConfig() {
             if (sscanf(t, "%d:%x:%d", &f, &vk, &hold) >= 2) c.keys.push_back({f, vk, hold});
         }
     }
+}
+
+static void IniPut(const char* path, const char* sec, const char* key, const char* fmt, double v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, fmt, v);
+    WritePrivateProfileStringA(sec, key, buf, path);
+}
+
+void SaveConfig() {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s\\szModern.ini", g_gameDir);
+    const Config& c = g_cfg;
+    IniPut(path, "Display", "Windowed", "%.0f", c.windowed);
+    IniPut(path, "Display", "Width", "%.0f", c.width);
+    IniPut(path, "Display", "Height", "%.0f", c.height);
+    IniPut(path, "Display", "VSync", "%.0f", c.vsync);
+    IniPut(path, "Display", "FrameLimit", "%.0f", c.frameLimit);
+    IniPut(path, "Display", "Widescreen", "%.0f", c.widescreen);
+    IniPut(path, "Display", "HudAtEdges", "%.0f", c.hudEdges);
+    IniPut(path, "Display", "MenusIn4x3", "%.0f", c.menuPillarbox);
+    IniPut(path, "Quality", "MSAA", "%.0f", c.msaa);
+    IniPut(path, "Quality", "RenderScale", "%.3f", c.renderScale);
+    IniPut(path, "Quality", "Anisotropy", "%.0f", c.anisotropy);
+    IniPut(path, "Quality", "GenerateMipmaps", "%.0f", c.generateMips);
+    IniPut(path, "Quality", "LightmapScale", "%.2f", c.lightmapScale);
+    IniPut(path, "Quality", "OpaqueCutout", "%.0f", c.opaqueCutout);
+    IniPut(path, "Quality", "TrueColor", "%.0f", c.trueColor);
+    IniPut(path, "Quality", "TexturePack", "%.0f", c.texturePack);
+    IniPut(path, "Quality", "NormalMaps", "%.0f", c.normalMaps);
+    IniPut(path, "Post", "Sharpen", "%.2f", c.sharpen);
+    IniPut(path, "Post", "Filter", "%.0f", c.filter);
+    IniPut(path, "Post", "FilterStrength", "%.2f", c.filterStrength);
+    IniPut(path, "Post", "Scanlines", "%.0f", c.scanlines);
+    char key[8];
+    snprintf(key, sizeof key, "F%d", c.overlayKey - VK_F1 + 1);
+    WritePrivateProfileStringA("Overlay", "Key", key, path);
+    IniPut(path, "Overlay", "ShowHint", "%.0f", c.overlayHint);
+    IniPut(path, "Overlay", "PauseGame", "%.0f", c.pauseInOverlay);
+    IniPut(path, "Launcher", "StartDirectly", "%.0f", c.startDirectly);
 }
 
 // ============================================================================
@@ -442,6 +459,17 @@ static HWND FindGameWindow() {
     return c.found;
 }
 
+static void CreateSamplers() {
+    SafeRelease(R->sampWrap);
+    D3D11_SAMPLER_DESC sm = {};
+    sm.Filter = g_cfg.anisotropy > 1 ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    sm.MaxAnisotropy = std::min(std::max(g_cfg.anisotropy, 1), 16);
+    sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    sm.MaxLOD = D3D11_FLOAT32_MAX;
+    sm.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    R->dev->CreateSamplerState(&sm, &R->sampWrap);
+}
+
 static bool CreateDevice() {
     R->hwnd = FindGameWindow();
     if (!R->hwnd) { Log("no game window found"); return false; }
@@ -593,15 +621,12 @@ static bool CreateDevice() {
     rs.MultisampleEnable = TRUE;
     R->dev->CreateRasterizerState(&rs, &R->raster);
 
+    CreateSamplers();
     D3D11_SAMPLER_DESC sm = {};
-    sm.Filter = g_cfg.anisotropy > 1 ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    sm.MaxAnisotropy = g_cfg.anisotropy;
-    sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    sm.MaxLOD = D3D11_FLOAT32_MAX;
-    sm.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    R->dev->CreateSamplerState(&sm, &R->sampWrap);
     sm.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sm.MaxAnisotropy = 1;
+    sm.MaxLOD = D3D11_FLOAT32_MAX;
+    sm.ComparisonFunc = D3D11_COMPARISON_NEVER;
     sm.AddressU = sm.AddressV = sm.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     R->dev->CreateSamplerState(&sm, &R->sampClamp);
     R->dev->CreateSamplerState(&sm, &R->sampHud);
@@ -623,6 +648,7 @@ static bool CreateDevice() {
 
     QueryPerformanceFrequency(&R->qpcFreq);
     QueryPerformanceCounter(&R->lastPresent);
+    overlay::Init(R->hwnd, R->dev, R->ctx, R->outH);
     return true;
 }
 
@@ -1089,6 +1115,7 @@ EXPORT int hwAPI_StartUp(void* rcp) {
 EXPORT int hwAPI_ShutDown(void* rcp) {
     if (!rcp || !R) return 0;
     Log("shutdown after %llu frames", (unsigned long long)R->frame);
+    overlay::Shutdown();
     for (Pls* p : R->live) { SafeRelease(p->srv); SafeRelease(p->tex); p->liveIndex = -1; }
     R->live.clear();
     if (R->ctx) R->ctx->ClearState();
@@ -1409,6 +1436,7 @@ EXPORT int hwAPI_ShowViewSurface(void* rcp) {
     R->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     R->ctx->VSSetShader(R->postVs, nullptr, 0);
     R->ctx->PSSetShader(R->postPs, nullptr, 0);
+    R->gamma = F<float>(rcp, rc::Gamma);
     float g = g_cfg.gammaOverride > 0 ? g_cfg.gammaOverride : R->gamma;
     if (!(g > 0.1f)) g = 1.0f;
     struct {
@@ -1436,13 +1464,18 @@ EXPORT int hwAPI_ShowViewSurface(void* rcp) {
     RunKeySchedule(R->frame);
     // F9 cycles the screen filter while playing
     static bool f9Down = false;
-    bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0 && GetForegroundWindow() == R->hwnd;
+    bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0 && GetForegroundWindow() == R->hwnd && !overlay::IsOpen();
     if (f9 && !f9Down) {
         static const char* names[] = {"off", "scanlines", "CRT", "CRT curved", "retro 640x480", "VHS"};
         g_cfg.filter = (g_cfg.filter + 1) % 6;
         Log("filter: %s", names[g_cfg.filter]);
     }
     f9Down = f9;
+    {
+        D3D11_VIEWPORT full = {0, 0, (float)R->outW, (float)R->outH, 0, 1};
+        R->ctx->RSSetViewports(1, &full);
+        overlay::Render(R->backRtv, R->outW, R->outH, &F<float>(rcp, rc::Gamma), g_inMenu);
+    }
     for (int f : g_cfg.shotFrames) {
         if ((uint64_t)f == R->frame) {
             char path[MAX_PATH];
@@ -1466,6 +1499,14 @@ EXPORT int hwAPI_ShowViewSurface(void* rcp) {
     HRESULT hr = R->swap->Present(vsync ? 1 : 0, 0);
     QueryPerformanceCounter(&R->lastPresent);
     if (FAILED(hr) && R->frame % 600 == 1) Log("Present failed 0x%08lx", hr);
+    if (unsigned apply = overlay::TakeApply()) {  // settings changed in the overlay
+        if (apply & overlay::ApplyTargets) {
+            R->ctx->ClearState();
+            CreateSceneTargets();
+        }
+        if (apply & overlay::ApplySamplers) CreateSamplers();
+        R->frameCbDirty = true;
+    }
 
     if (R->frame % 600 == 0) {
         static LARGE_INTEGER lastStat;
@@ -1644,6 +1685,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(inst);
         char path[MAX_PATH];
         GetModuleFileNameA(inst, path, sizeof path);
+        snprintf(g_dllPath, sizeof g_dllPath, "%s", path);
         char* slash = strrchr(path, '\\');
         snprintf(g_dllName, sizeof g_dllName, "%s", slash ? slash + 1 : path);
         if (slash) *slash = 0;

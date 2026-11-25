@@ -47,7 +47,7 @@ static LRESULT WINAPI WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR cmdLine, int) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     ImGui_ImplWin32_EnableDpiAwareness();
     float scale = ImGui_ImplWin32_GetDpiScaleForMonitor(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY));
@@ -80,12 +80,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         return 1;
     }
     CreateRtv();
-    ShowWindow(hwnd, SW_SHOWDEFAULT);
-    UpdateWindow(hwnd);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     App app;
+    if (cmdLine && wcsstr(cmdLine, L"--launcher")) app.ForceWindow();
     LauncherSetupImGui(app, scale);
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_dev, g_ctx);
@@ -100,6 +99,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
             if (msg.message == WM_QUIT) running = false;
         }
         if (!running) break;
+        if (!app.Tick()) break;
+        {  // hidden while the game runs and when starting the game directly
+            bool hide = app.WindowHidden();
+            bool visible = IsWindowVisible(hwnd) != 0;
+            if (hide && visible) ShowWindow(hwnd, SW_HIDE);
+            if (!hide && !visible) {
+                ShowWindow(hwnd, SW_SHOWDEFAULT);
+                SetForegroundWindow(hwnd);
+            }
+            if (hide) {
+                Sleep(100);
+                continue;
+            }
+        }
         if (g_resizeW && g_resizeH) {
             if (g_rtv) { g_rtv->Release(); g_rtv = nullptr; }
             g_swap->ResizeBuffers(0, g_resizeW, g_resizeH, DXGI_FORMAT_UNKNOWN, 0);

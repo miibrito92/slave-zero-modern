@@ -47,15 +47,22 @@ struct Settings {
     bool gamescope = false;
     bool mangohud = false;
     bool gamemode = false;
-    bool closeOnPlay = true;
+    bool closeOnPlay = true;   // close the launcher when the game exits (else show it again)
+    bool startDirectly = false;  // szModern.ini [Launcher] StartDirectly: skip this window
     std::string extraEnv;
 };
 
 class App {
 public:
     void Init();
+    // Runs every loop iteration, visible or not: starts the game when skipping the window and
+    // handles the game exiting. Returns false when the launcher should exit.
+    bool Tick();
     // Draws the whole UI. Returns false when the launcher should exit.
     bool Frame();
+    // The window stays hidden while the game runs, and when starting the game directly.
+    bool WindowHidden() const;
+    void ForceWindow() { forceWindow_ = true; }
     void SetFonts(ImFont* body, ImFont* title, ImFont* big) { body_ = body; title_ = title; big_ = big; }
 
 private:
@@ -67,6 +74,7 @@ private:
     bool Install(std::string& msg);
     void Play();
     void Notify(const std::string& msg, bool error = false);
+    void OnGameExited();
 
     void DrawHeader();
     void DrawGameFolder();
@@ -90,6 +98,10 @@ private:
     double messageTime_ = 0;
     bool quit_ = false;
     bool dirty_ = false;
+    bool forceWindow_ = false;   // --launcher on the command line
+    bool hiddenStart_ = false;   // starting the game directly; window not shown yet
+    bool pendingPlay_ = false;
+    bool gameWasRunning_ = false;
     char pathBuf_[1024] = {};
     ImFont* body_ = nullptr;
     ImFont* title_ = nullptr;

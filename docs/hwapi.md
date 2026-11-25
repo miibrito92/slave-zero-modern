@@ -159,3 +159,27 @@ With `CanUseTrueColor` = 1 and `Use True Color Textures=1`, the engine skips its
 conversion (`FUN_00438740`): textures whose file flags have `0x200` stay 32-bit `0xAARRGGBB`.
 ~330 of 1415 shipped textures are 32-bit (mostly effects with smooth alpha); the rest were
 authored as ARGB1555. Bump maps exist only for the player mech (`a_Slave0_live_*_bump1..4`).
+
+## Frame timer (pause)
+
+`FUN_0042d310` is the engine's per-frame timer, called once per frame from `0x40a3e8`. Game time
+is counted in 1/120 s ticks (`FUN_0042d290` returns accumulated QPC seconds × 120). In real-time
+mode (`[0x4dbd00] == 0`) it busy-waits until at least one tick has passed (`[0x4457d0]` = 1.0, which
+is why the game never exceeds 120 fps), clamps the step to `[0x4457d8]` = 120 ticks, and stores:
+
+| Address    | Meaning                         |
+|------------|---------------------------------|
+| `0x4e84b0` | game time (float, ticks)        |
+| `0x4e8490` | previous frame's game time      |
+| `0x4e8494` | this frame's step (float, ticks)|
+
+The overlay redirects the call. While paused it sets the step to 0 and moves both times to the
+current clock, so the game keeps rendering without advancing, and resumes without a jump. Freezing
+the clock functions instead does not work: the busy-wait never ends and the game stops rendering.
+
+## Input
+
+Keyboard and mouse come from `Scripts/wInputKBM.dll` (DirectInput plus `GetAsyncKeyState`,
+`GetKeyState`, `GetCursorPos`, `SetCursorPos`). The overlay blocks them by patching those imports in
+the game's modules and the `Acquire` / `GetDeviceState` / `GetDeviceData` slots of dinput's device
+vtable (shared by all devices, so hooking a throwaway device covers the game's).

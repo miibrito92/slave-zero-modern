@@ -108,6 +108,10 @@ void App::Init() {
         if (!found.empty()) dir = found.front();
     }
     SetGameDir(dir);
+    if (s_.startDirectly && gameValid_ && !forceWindow_ && !std::getenv("SZL_SHOT") && !std::getenv("SZL_REPORT")) {
+        hiddenStart_ = true;
+        pendingPlay_ = true;
+    }
 }
 
 void App::SetGameDir(const fs::path& dir) {
@@ -133,6 +137,7 @@ void App::LoadSettings() {
     s_.hudEdges = m.GetInt("Display", "HudAtEdges", 0) != 0;
     s_.menus4x3 = m.GetInt("Display", "MenusIn4x3", 1) != 0;
     s_.msaa = m.GetInt("Quality", "MSAA", d.msaa);
+    s_.startDirectly = m.GetInt("Launcher", "StartDirectly", 0) != 0;
     s_.renderScale = m.GetFloat("Quality", "RenderScale", d.renderScale);
     s_.aniso = m.GetInt("Quality", "Anisotropy", d.aniso);
     s_.mips = m.GetInt("Quality", "GenerateMipmaps", 1) != 0;
@@ -192,6 +197,7 @@ bool App::SaveSettings() {
         m.SetFloat("Post", "FilterStrength", s_.filterStrength, 2);
         m.SetInt("Post", "Scanlines", s_.scanlines);
         m.Set("Post", "Gamma", "0");
+        m.SetInt("Launcher", "StartDirectly", s_.startDirectly);
         ok &= m.Save();
 
         Ini o;
@@ -320,6 +326,8 @@ void App::Notify(const std::string& msg, bool error) {
     messageTime_ = ImGui::GetTime();
 }
 
+static bool TakeFlag(const fs::path& dir, const char* name);
+
 void App::Play() {
     if (!gameValid_) { Notify("Choose the Slave Zero folder first.", true); return; }
     if (rendererStatus_ != Status::Ok || exeStatus_ != Status::Ok) {
@@ -343,10 +351,50 @@ void App::Play() {
         o.refresh = display_.refresh;
     }
     std::string err;
+    TakeFlag(gameDir_, "szmodern.restart");
+    TakeFlag(gameDir_, "szmodern.launcher");
     if (!platform::Launch(o, err)) { Notify("Launch failed: " + err, true); return; }
     Notify("Starting Slave Zero...");
-    if (s_.closeOnPlay) quit_ = true;
+    gameWasRunning_ = true;
 }
+
+// Flags the in-game menu leaves in the game folder before it closes the game.
+static bool TakeFlag(const fs::path& dir, const char* name) {
+    std::error_code ec;
+    return fs::remove(dir / name, ec);
+}
+
+void App::OnGameExited() {
+    LoadSettings();  // the in-game menu may have changed them
+    if (TakeFlag(gameDir_, "szmodern.restart")) {
+        Play();
+        return;
+    }
+    bool wantWindow = TakeFlag(gameDir_, "szmodern.launcher");
+    if (!wantWindow && (s_.closeOnPlay || hiddenStart_)) {
+        quit_ = true;
+        return;
+    }
+    hiddenStart_ = false;  // show the launcher again
+}
+
+bool App::Tick() {
+    if (pendingPlay_) {
+        pendingPlay_ = false;
+        TakeFlag(gameDir_, "szmodern.restart");
+        TakeFlag(gameDir_, "szmodern.launcher");
+        Play();
+        if (!gameWasRunning_) hiddenStart_ = false;  // could not start: show the launcher with the error
+    }
+    bool running = platform::GameRunning();
+    if (gameWasRunning_ && !running) {
+        gameWasRunning_ = false;
+        OnGameExited();
+    }
+    return !quit_;
+}
+
+bool App::WindowHidden() const { return hiddenStart_ || platform::GameRunning(); }
 
 // ============================================================================
 // UI
@@ -668,6 +716,16 @@ void App::DrawGameTab() {
     Label("Hardware 3D audio (EAX)");
     if (ImGui::Checkbox("##eax", &s_.eax)) dirty_ = true;
     Help("Only for sound cards with real EAX/DirectSound3D hardware. Leave off on modern systems and on Linux.");
+
+    Section("Launcher");
+    Label("Start the game directly");
+    if (ImGui::Checkbox("##direct", &s_.startDirectly)) dirty_ = true;
+    Help("Skips this window: the game starts at once. Press F10 in the game (or Back + Start on a gamepad) "
+         "for these settings. To see this window again, choose \"Open launcher\" in that menu or start the "
+         "launcher with --launcher.");
+    Label("Close when the game exits");
+    if (ImGui::Checkbox("##close", &s_.closeOnPlay)) dirty_ = true;
+    Help("Otherwise this window comes back after you quit the game.");
     ImGui::EndTable();
 }
 
@@ -741,8 +799,6 @@ void App::DrawFooter() {
         dirty_ = true;
     }
     ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::Checkbox("Close launcher on play", &s_.closeOnPlay);
 
     // message
     if (!message_.empty() && ImGui::GetTime() - messageTime_ < 8.0) {

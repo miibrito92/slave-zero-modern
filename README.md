@@ -17,10 +17,17 @@ No game files are included: you need your own copy of the game.
   - widescreen polish: 4:3 menus/intro, optional HUD at the screen edges
   - optional HD texture pack: the game's own textures upscaled 4x with Real-ESRGAN, plus per-pixel
     lighting for the player mech from the height maps the game ships (its original bump-mapping assets)
+  - in-game settings menu: **F10** (configurable) or Back + Start on a gamepad. Mouse, keyboard and
+    gamepad navigation; the game is paused and gets no input while it is open. Most settings apply
+    live; window mode, aspect ratio and texture options are marked and applied with "Restart game"
 - **Launcher** — Windows `.exe` and Linux AppImage. Finds the game (GOG registry, Lutris, Heroic),
   installs/repairs the renderer, and exposes the settings: resolution, display mode, frame rate,
   anti-aliasing, screen filters, controls and audio, plus Proton/Wine, gamescope, MangoHud and GameMode
   on Linux. Its "Build HD textures" button downloads Real-ESRGAN and generates the texture pack locally.
+  With "Start the game directly" it skips its window (start it with `--launcher` to see it again); it
+  stays in the background while the game runs to restart the game or reopen when the in-game menu asks.
+  On Linux inside gamescope (Steam Game Mode) it tags the game's window with `STEAM_GAME` so gamescope
+  shows and focuses it.
 - A 2-byte compatibility patch for `SlaveZero.exe`: its CPU-speed probe executes `cli`/`sti`, which
   faults on Windows NT and Wine. The launcher applies it and keeps `SlaveZero.exe.original`.
 

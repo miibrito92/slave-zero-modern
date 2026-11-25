@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 #include "app.h"
@@ -14,7 +15,7 @@
 SDL_Window* g_window = nullptr;
 void LauncherSetupImGui(App& app, float scale);
 
-int main(int, char**) {
+int main(int argc, char** argv) {
     SDL_SetHint(SDL_HINT_APP_ID, "slavezero-launcher");
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_Log("SDL_Init failed: %s", SDL_GetError());
@@ -42,11 +43,12 @@ int main(int, char**) {
     SDL_GL_MakeCurrent(g_window, gl);
     SDL_GL_SetSwapInterval(1);
     SDL_SetWindowPosition(g_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-    SDL_ShowWindow(g_window);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     App app;
+    for (int i = 1; i < argc; ++i)  // Steam appends its own arguments; only ours matter
+        if (std::strcmp(argv[i], "--launcher") == 0) app.ForceWindow();
     LauncherSetupImGui(app, scale);
     ImGui_ImplSDL3_InitForOpenGL(g_window, gl);
     ImGui_ImplOpenGL3_Init("#version 330");
@@ -61,14 +63,18 @@ int main(int, char**) {
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == SDL_GetWindowID(g_window)) running = false;
         }
-        // In Steam Game Mode the launcher and the game share the Steam game ID, so gamescope could keep
-        // showing the launcher; hide it while the game runs and bring it back afterwards.
-        if (platform::InsideGamescope()) {
+        if (!app.Tick()) break;
+        // Hidden while the game runs (in Steam Game Mode the launcher and the game share the Steam
+        // game ID, so gamescope could keep showing the launcher) and when starting the game directly.
+        {
             bool hidden = SDL_GetWindowFlags(g_window) & SDL_WINDOW_HIDDEN;
-            bool game = platform::GameRunning();
-            if (game && !hidden) SDL_HideWindow(g_window);
-            if (!game && hidden) SDL_ShowWindow(g_window);
-            if (game) {
+            bool hide = app.WindowHidden();
+            if (hide && !hidden) SDL_HideWindow(g_window);
+            if (!hide && hidden) {
+                SDL_ShowWindow(g_window);
+                SDL_RaiseWindow(g_window);
+            }
+            if (hide) {
                 SDL_Delay(100);
                 continue;
             }

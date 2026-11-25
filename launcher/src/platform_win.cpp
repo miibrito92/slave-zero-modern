@@ -7,7 +7,12 @@
 #include <shobjidl.h>
 #include <urlmon.h>
 
+#include <atomic>
+#include <thread>
+
 #include "platform.h"
+
+static std::atomic<int> g_games{0};
 
 namespace {
 
@@ -26,7 +31,7 @@ namespace platform {
 const char* Name() { return "Windows"; }
 bool IsWindows() { return true; }
 bool InsideGamescope() { return false; }
-bool GameRunning() { return false; }
+bool GameRunning() { return g_games > 0; }
 
 fs::path ConfigDir() {
     wchar_t* appdata = nullptr;
@@ -75,12 +80,18 @@ bool Launch(const LaunchOptions& o, std::string& err) {
     std::wstring cmd = L"\"" + exe + L"\"";
     STARTUPINFOW si = {sizeof si};
     PROCESS_INFORMATION pi = {};
+    SetEnvironmentVariableW(L"SZM_LAUNCHER", L"1");  // the in-game menu can ask us to restart the game
     if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, o.gameDir.c_str(), &si, &pi)) {
         err = "CreateProcess error " + std::to_string(GetLastError());
         return false;
     }
     CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
+    ++g_games;
+    std::thread([h = pi.hProcess] {  // the launcher hides while the game runs
+        WaitForSingleObject(h, INFINITE);
+        CloseHandle(h);
+        --g_games;
+    }).detach();
     return true;
 }
 
