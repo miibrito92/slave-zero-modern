@@ -69,4 +69,10 @@ frustum hook used for widescreen. `tools/decompile.sh` regenerates the Ghidra ou
 - [Orbitron](https://fonts.google.com/specimen/Orbitron) and [Exo 2](https://fonts.google.com/specimen/Exo+2)
   (SIL Open Font License) — `launcher/third_party/fonts`
 
-Slave Zero is a trademark of its respective owners. This project is not affiliated with them or with GOG.
+## License
+
+[MIT](LICENSE) for the code in this repository; third-party components keep their own licenses (above).
+Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Slave Zero is a trademark of its respective owners. This project is not affiliated with them, GOG or Valve.
+No game files are included; you need your own copy of the game.
