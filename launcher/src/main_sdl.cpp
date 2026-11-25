@@ -61,6 +61,18 @@ int main(int, char**) {
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == SDL_GetWindowID(g_window)) running = false;
         }
+        // In Steam Game Mode the launcher and the game share the Steam game ID, so gamescope could keep
+        // showing the launcher; hide it while the game runs and bring it back afterwards.
+        if (platform::InsideGamescope()) {
+            bool hidden = SDL_GetWindowFlags(g_window) & SDL_WINDOW_HIDDEN;
+            bool game = platform::GameRunning();
+            if (game && !hidden) SDL_HideWindow(g_window);
+            if (!game && hidden) SDL_ShowWindow(g_window);
+            if (game) {
+                SDL_Delay(100);
+                continue;
+            }
+        }
         if (platform::SpawnInProgress()) {  // see platform.h
             SDL_Delay(10);
             continue;

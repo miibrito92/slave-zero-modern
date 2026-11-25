@@ -26,6 +26,7 @@ namespace platform {
 const char* Name() { return "Windows"; }
 bool IsWindows() { return true; }
 bool InsideGamescope() { return false; }
+bool GameRunning() { return false; }
 
 fs::path ConfigDir() {
     wchar_t* appdata = nullptr;

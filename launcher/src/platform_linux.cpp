@@ -75,6 +75,7 @@ bool NaturalLess(const std::string& a, const std::string& b) {
 // posix_spawn (clone with CLONE_VM|CLONE_VFORK) instead of fork(): the launcher holds GPU
 // mappings and several threads, and a forked copy can stall in the kernel before exec.
 std::atomic<int> g_spawning{0};
+std::atomic<int> g_games{0};
 
 int Spawn(char* const* argv, char* const* envp, const std::string& dir, bool newSession, bool quiet, pid_t& pid) {
     struct Busy {
@@ -263,7 +264,14 @@ bool Launch(const LaunchOptions& o, std::string& err) {
         if (!umu.empty()) {
             env.push_back({"PROTONPATH", o.runner.path.string()});
             env.push_back({"WINEPREFIX", o.prefix.string()});
-            env.push_back({"GAMEID", "umu-0"});
+            // Under Steam, keep the game's Steam ID: umu copies GAMEID into SteamGameId, which Proton
+            // uses to tag the game's windows. Steam Game Mode only shows windows tagged with the
+            // running game's ID, so "umu-0" leaves the game invisible behind the launcher.
+            std::string gameId = "umu-0";
+            if (const char* sgi = std::getenv("SteamGameId"); sgi && *sgi && std::strspn(sgi, "0123456789") == std::strlen(sgi) &&
+                                                               std::strcmp(sgi, "0") != 0)
+                gameId = std::string("umu-") + sgi;
+            env.push_back({"GAMEID", gameId});
             env.push_back({"UMU_RUNTIME_UPDATE", "0"});
             argv.push_back(umu.string());
         } else {
@@ -314,7 +322,11 @@ bool Launch(const LaunchOptions& o, std::string& err) {
     pid_t pid = 0;
     int rc = Spawn(a.data(), ev.data(), dir, true, false, pid);
     if (rc != 0) { err = std::strerror(rc); return false; }
-    std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();  // reap when the game exits
+    ++g_games;
+    std::thread([pid] {  // reap when the game exits
+        waitpid(pid, nullptr, 0);
+        --g_games;
+    }).detach();
     return true;
 }
 
@@ -354,6 +366,7 @@ void PickFolder(std::function<void(const fs::path&)> done) {
 }
 
 bool SpawnInProgress() { return g_spawning > 0; }
+bool GameRunning() { return g_games > 0; }
 
 void Poll() {
     fs::path picked;

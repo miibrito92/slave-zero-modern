@@ -54,4 +54,6 @@ bool SpawnInProgress();
 // True when the launcher itself runs inside gamescope (e.g. Steam Game Mode); a nested gamescope
 // would draw where the session never shows it.
 bool InsideGamescope();
+// True while a game started by Launch() is still running (Linux; always false on Windows).
+bool GameRunning();
 }  // namespace platform
