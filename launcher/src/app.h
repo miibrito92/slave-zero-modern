@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "packbuilder.h"
 #include "platform.h"
 
 struct ImFont;
@@ -93,4 +94,5 @@ private:
     ImFont* body_ = nullptr;
     ImFont* title_ = nullptr;
     ImFont* big_ = nullptr;
+    PackBuilder pack_;
 };

@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
+#include <urlmon.h>
 
 #include "platform.h"
 
@@ -105,5 +106,40 @@ void PickFolder(std::function<void(const fs::path&)> done) {
 }
 
 void Poll() {}
+bool SpawnInProgress() { return false; }
+
+static std::wstring Widen(const std::string& s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+    if (n > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
+bool Download(const std::string& url, const fs::path& dest, std::string& err) {
+    HRESULT hr = URLDownloadToFileW(nullptr, Widen(url).c_str(), dest.c_str(), 0, nullptr);
+    if (FAILED(hr)) { err = "download failed (HRESULT " + std::to_string((unsigned long)hr) + ")"; return false; }
+    return true;
+}
+
+int RunProcess(const std::vector<std::string>& argv, const fs::path& cwd, std::string& err) {
+    std::wstring cmd;
+    for (auto& a : argv) {
+        if (!cmd.empty()) cmd += L' ';
+        cmd += L'"' + Widen(a) + L'"';
+    }
+    STARTUPINFOW si = {sizeof si};
+    PROCESS_INFORMATION pi = {};
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                        cwd.empty() ? nullptr : cwd.c_str(), &si, &pi)) {
+        err = "could not start " + argv[0];
+        return -1;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (int)code;
+}
 
 }  // namespace platform

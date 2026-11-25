@@ -61,6 +61,10 @@ int main(int, char**) {
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == SDL_GetWindowID(g_window)) running = false;
         }
+        if (platform::SpawnInProgress()) {  // see platform.h
+            SDL_Delay(10);
+            continue;
+        }
         if (SDL_GetWindowFlags(g_window) & SDL_WINDOW_MINIMIZED) {
             SDL_Delay(50);
             continue;

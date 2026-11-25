@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -353,6 +354,17 @@ void App::Play() {
 
 bool App::Frame() {
     platform::Poll();
+    {
+        bool ok;
+        std::string msg;
+        if (pack_.TakeFinished(ok, msg)) {
+            Notify(msg, !ok);
+            if (ok) { s_.texturePack = true; dirty_ = true; }
+            if (std::getenv("SZL_BUILDPACK")) { std::printf("%s\n", msg.c_str()); quit_ = true; }
+        }
+        static int bf = 0;  // debug: SZL_BUILDPACK=1 builds the pack and exits
+        if (std::getenv("SZL_BUILDPACK") && ++bf == 3 && gameValid_) pack_.Start(gameDir_);
+    }
     // debug: SZL_REPORT=file writes what the launcher detected and exits
     static int frames = 0;
     if (const char* rep = std::getenv("SZL_REPORT"); rep && ++frames == 5) {
@@ -564,11 +576,21 @@ void App::DrawGraphicsTab() {
     {
         std::error_code ec;
         bool havePack = gameValid_ && fs::exists(gameDir_ / "szmodern" / "textures", ec);
-        ImGui::BeginDisabled(!havePack);
+        ImGui::BeginDisabled(!havePack || pack_.Running());
         if (ImGui::Checkbox("##pack", &s_.texturePack)) dirty_ = true;
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::TextColored(kMuted, havePack ? "AI-upscaled 4x textures (szmodern/textures)" : "not built yet");
+        if (pack_.Running()) {
+            float p = pack_.Progress();
+            std::string st = pack_.Status();
+            ImGui::ProgressBar(p < 0 ? -1.0f * (float)ImGui::GetTime() : p, ImVec2(-FLT_MIN, 0), st.c_str());
+        } else {
+            if (ImGui::Button(havePack ? "Rebuild HD textures" : "Build HD textures")) pack_.Start(gameDir_);
+            ImGui::SameLine();
+            ImGui::TextColored(kMuted, havePack ? "AI-upscaled 4x (Real-ESRGAN)" : "not built yet");
+            Help("Upscales the game's own textures 4x with Real-ESRGAN on your GPU and stores them in szmodern/textures. "
+                 "Downloads the upscaler (about 45 MB) the first time. Takes a few minutes.");
+        }
     }
     Label("Per-pixel lighting");
     if (ImGui::Checkbox("##nrm", &s_.normalMaps)) dirty_ = true;

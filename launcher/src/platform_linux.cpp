@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -13,9 +14,16 @@
 #include <fstream>
 #include <mutex>
 #include <regex>
+#include <atomic>
+#include <chrono>
 #include <sstream>
+#include <thread>
 
 #include "platform.h"
+
+extern char** environ;
+
+static const std::thread::id g_uiThread = std::this_thread::get_id();  // static init runs on the main thread
 
 extern SDL_Window* g_window;
 
@@ -62,6 +70,41 @@ bool NaturalLess(const std::string& a, const std::string& b) {
         }
     }
     return a.size() < b.size();
+}
+
+// posix_spawn (clone with CLONE_VM|CLONE_VFORK) instead of fork(): the launcher holds GPU
+// mappings and several threads, and a forked copy can stall in the kernel before exec.
+std::atomic<int> g_spawning{0};
+
+int Spawn(char* const* argv, char* const* envp, const std::string& dir, bool newSession, bool quiet, pid_t& pid) {
+    struct Busy {
+        Busy() { ++g_spawning; }
+        ~Busy() { --g_spawning; }
+    } busy;
+    // give the UI thread a moment to finish the frame it may be submitting
+    if (std::this_thread::get_id() != g_uiThread) std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    posix_spawn_file_actions_t fa;
+    posix_spawnattr_t at;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawnattr_init(&at);
+    if (!dir.empty()) posix_spawn_file_actions_addchdir_np(&fa, dir.c_str());
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    if (quiet) {
+        posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+        posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    }
+    short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+    if (newSession) flags |= POSIX_SPAWN_SETSID;
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    posix_spawnattr_setsigmask(&at, &none);
+    posix_spawnattr_setsigdefault(&at, &all);
+    posix_spawnattr_setflags(&at, flags);
+    int rc = posix_spawnp(&pid, argv[0], &fa, &at, argv, envp);
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&at);
+    return rc;
 }
 
 std::mutex g_pickMutex;
@@ -242,42 +285,70 @@ bool Launch(const LaunchOptions& o, std::string& err) {
         }
     }
 
-    pid_t pid = fork();
-    if (pid < 0) { err = std::strerror(errno); return false; }
-    if (pid == 0) {
-        setsid();
-        if (chdir(o.gameDir.c_str()) != 0) _exit(127);
-        // don't leak the AppImage's private libraries into the game
-        if (const char* appdir = std::getenv("APPDIR")) {
-            const char* ld = std::getenv("LD_LIBRARY_PATH");
-            if (ld && std::strstr(ld, appdir)) unsetenv("LD_LIBRARY_PATH");
-        }
-        for (auto& [k, v] : env) setenv(k.c_str(), v.c_str(), 1);
-        int nul = open("/dev/null", O_RDWR);
-        if (nul >= 0) { dup2(nul, 0); }
-        std::vector<char*> a;
-        for (auto& s : argv) a.push_back(const_cast<char*>(s.c_str()));
-        a.push_back(nullptr);
-        execv(a[0], a.data());
-        _exit(127);
+    // build argv/envp before forking: the launcher is multithreaded, so the child may only
+    // call async-signal-safe functions until exec
+    const char* appdir = std::getenv("APPDIR");
+    std::vector<std::string> envs;
+    for (char** e = environ; *e; ++e) {
+        std::string kv = *e;
+        std::string key = kv.substr(0, kv.find('='));
+        bool overridden = false;
+        for (auto& p : env) overridden |= p.first == key;
+        if (overridden) continue;
+        if (key == "LD_LIBRARY_PATH" && appdir && kv.find(appdir) != std::string::npos) continue;  // AppImage libs
+        envs.push_back(kv);
     }
-    // reap in the background so it never becomes a zombie
-    signal(SIGCHLD, SIG_IGN);
+    for (auto& [k, v] : env) envs.push_back(k + "=" + v);
+    std::vector<char*> a, ev;
+    for (auto& s2 : argv) a.push_back(const_cast<char*>(s2.c_str()));
+    a.push_back(nullptr);
+    for (auto& s2 : envs) ev.push_back(const_cast<char*>(s2.c_str()));
+    ev.push_back(nullptr);
+    std::string dir = o.gameDir.string();
+
+    pid_t pid = 0;
+    int rc = Spawn(a.data(), ev.data(), dir, true, false, pid);
+    if (rc != 0) { err = std::strerror(rc); return false; }
+    std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();  // reap when the game exits
     return true;
 }
 
-void OpenFolder(const fs::path& p) {
-    if (fork() == 0) {
-        setsid();
-        execlp("xdg-open", "xdg-open", p.c_str(), (char*)nullptr);
-        _exit(127);
+int RunProcess(const std::vector<std::string>& argv, const fs::path& cwd, std::string& err) {
+    std::vector<char*> a;
+    for (auto& s2 : argv) a.push_back(const_cast<char*>(s2.c_str()));
+    a.push_back(nullptr);
+    pid_t pid = 0;
+    int rc = Spawn(a.data(), environ, cwd.string(), false, true, pid);
+    if (rc != 0) { err = "could not run " + argv[0] + ": " + std::strerror(rc); return -1; }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) { err = std::strerror(errno); return -1; }
+    if (WIFEXITED(status)) {
+        if (WEXITSTATUS(status) == 127) err = "could not run " + argv[0];
+        return WEXITSTATUS(status);
     }
+    err = "terminated by a signal";
+    return -1;
+}
+
+bool Download(const std::string& url, const fs::path& dest, std::string& err) {
+    int rc = RunProcess({"curl", "-fsSL", "--retry", "2", "-o", dest.string(), url}, {}, err);
+    if (rc != 0 && err.empty()) err = "download failed (curl exit " + std::to_string(rc) + ")";
+    return rc == 0;
+}
+
+void OpenFolder(const fs::path& p) {
+    std::string path = p.string();
+    char* a[] = {const_cast<char*>("xdg-open"), const_cast<char*>(path.c_str()), nullptr};
+    pid_t pid = 0;
+    if (Spawn(a, environ, {}, true, true, pid) == 0) std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();
 }
 
 void PickFolder(std::function<void(const fs::path&)> done) {
     g_pickDone = std::move(done);
     SDL_ShowOpenFolderDialog(OnFolderPicked, nullptr, g_window, Home().c_str(), false);
 }
+
+bool SpawnInProgress() { return g_spawning > 0; }
 
 void Poll() {
     fs::path picked;

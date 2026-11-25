@@ -28,17 +28,18 @@ if [ ! -f "$gen/icon-256.png" ]; then
   magick "$gen/icon-256.png" -define icon:auto-resize=256,64,48,32,16 "$gen/icon.ico"
 fi
 
-common_src=("$here/src/app.cpp" "$here/src/ui_style.cpp" "$imgui/imgui.cpp" "$imgui/imgui_draw.cpp"
-            "$imgui/imgui_tables.cpp" "$imgui/imgui_widgets.cpp")
-inc=(-I"$here/src" -I"$gen" -I"$imgui" -I"$imgui/backends")
+common_src=("$here/src/app.cpp" "$here/src/ui_style.cpp" "$here/src/packbuilder.cpp" "$imgui/imgui.cpp"
+            "$imgui/imgui_draw.cpp" "$imgui/imgui_tables.cpp" "$imgui/imgui_widgets.cpp")
+inc=(-I"$here/src" -I"$gen" -I"$imgui" -I"$imgui/backends" -I"$here/third_party/miniz" -I"$here/third_party/stb")
 
 if [ "$what" = all ] || [ "$what" = linux ]; then
   mkdir -p "$out/linux"
+  gcc -O2 -c "$here/third_party/miniz/miniz.c" -o "$out/linux/miniz.o"
   g++ -O2 -std=c++17 -Wall -Wno-unused-parameter "${inc[@]}" \
     "${common_src[@]}" "$here/src/platform_linux.cpp" "$here/src/main_sdl.cpp" \
-    "$imgui/backends/imgui_impl_sdl3.cpp" "$imgui/backends/imgui_impl_opengl3.cpp" \
+    "$imgui/backends/imgui_impl_sdl3.cpp" "$imgui/backends/imgui_impl_opengl3.cpp" "$out/linux/miniz.o" \
     -o "$out/linux/slavezero-launcher" -static-libstdc++ -static-libgcc \
-    -Wl,-rpath,'$ORIGIN/../lib' $(pkg-config --cflags --libs sdl3) -lGL -ldl
+    -Wl,-rpath,'$ORIGIN/../lib' $(pkg-config --cflags --libs sdl3) -lGL -ldl -lpthread
   echo "built $out/linux/slavezero-launcher"
 
   appdir="$out/linux/AppDir"
@@ -72,11 +73,12 @@ if [ "$what" = all ] || [ "$what" = windows ]; then
   tc="$(ls -d "$HOME"/.local/opt/sz-tools/llvm-mingw-* | head -1)"
   mkdir -p "$out/windows"
   printf 'APPICON ICON "%s"\n' "$gen/icon.ico" > "$gen/launcher.rc"
+  "$tc/bin/x86_64-w64-mingw32-clang" -O2 -c "$here/third_party/miniz/miniz.c" -o "$out/windows/miniz.o"
   "$tc/bin/x86_64-w64-mingw32-windres" "$gen/launcher.rc" -O coff -o "$out/windows/launcher.res"
   "$tc/bin/x86_64-w64-mingw32-clang++" -O2 -std=c++17 -municode -mwindows -static \
     -Wall -Wno-unused-parameter "${inc[@]}" \
     "${common_src[@]}" "$here/src/platform_win.cpp" "$here/src/main_win32.cpp" \
-    "$imgui/backends/imgui_impl_win32.cpp" "$imgui/backends/imgui_impl_dx11.cpp" "$out/windows/launcher.res" \
-    -o "$out/SlaveZero-Launcher.exe" -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -lole32 -lshell32 -luuid
+    "$imgui/backends/imgui_impl_win32.cpp" "$imgui/backends/imgui_impl_dx11.cpp" "$out/windows/launcher.res" "$out/windows/miniz.o" \
+    -o "$out/SlaveZero-Launcher.exe" -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -lole32 -lshell32 -luuid -lurlmon
   echo "built $out/SlaveZero-Launcher.exe"
 fi

@@ -41,7 +41,14 @@ std::vector<Runner> DetectRunners();        // empty on Windows
 fs::path PrefixForGameDir(const fs::path& gameDir);  // Wine prefix containing the game (Linux)
 bool Launch(const LaunchOptions& o, std::string& err);
 void OpenFolder(const fs::path& p);
+bool Download(const std::string& url, const fs::path& dest, std::string& err);
+// Runs a program to completion with no console window; returns its exit code (-1 if it could not start).
+int RunProcess(const std::vector<std::string>& argv, const fs::path& cwd, std::string& err);
 // Shows a folder picker; result is delivered later via the callback on the UI thread's next poll.
 void PickFolder(std::function<void(const fs::path&)> done);
 void Poll();  // deliver pending async results
+// True while another thread is starting a process. The UI thread must not submit GPU work then:
+// on Linux the new process closes its inherited DRM descriptor, and amdgpu waits for the GPU queue
+// to drain, which never happens while frames keep coming.
+bool SpawnInProgress();
 }  // namespace platform
