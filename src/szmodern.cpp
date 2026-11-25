@@ -46,6 +46,9 @@ struct Config {
     float lightmapScale = 2.0f;
     int opaqueCutout = 1;
     float sharpen = 0.3f;
+    int filter = 0;            // 0 none, 1 scanlines, 2 CRT, 3 CRT curved, 4 retro pixels, 5 VHS
+    float filterStrength = 0.7f;
+    int scanlines = 480;
     float gammaOverride = 0.0f;
     float decalBias = 1.0f / 4096.0f;
     int log = 1;
@@ -96,6 +99,9 @@ static void LoadConfig() {
     c.lightmapScale = IniFloat(path, "Quality", "LightmapScale", c.lightmapScale);
     c.opaqueCutout = GetPrivateProfileIntA("Quality", "OpaqueCutout", c.opaqueCutout, path);
     c.sharpen = IniFloat(path, "Post", "Sharpen", c.sharpen);
+    c.filter = GetPrivateProfileIntA("Post", "Filter", c.filter, path);
+    c.filterStrength = std::min(std::max(IniFloat(path, "Post", "FilterStrength", c.filterStrength), 0.0f), 1.0f);
+    c.scanlines = std::min(std::max((int)GetPrivateProfileIntA("Post", "Scanlines", c.scanlines, path), 120), 1080);
     c.gammaOverride = IniFloat(path, "Post", "Gamma", c.gammaOverride);
     c.log = GetPrivateProfileIntA("Debug", "Log", c.log, path);
 
@@ -487,6 +493,13 @@ static bool CreateDevice() {
     ID3DBlob* psb = Compile(kSceneHlsl, sizeof kSceneHlsl - 1, "ps_main", "ps_5_0");
     ID3DBlob* pvb = Compile(kPostHlsl, sizeof kPostHlsl - 1, "vs_post", "vs_5_0");
     ID3DBlob* ppb = Compile(kPostHlsl, sizeof kPostHlsl - 1, "ps_post", "ps_5_0");
+    if (!pvb || !ppb) {
+        Log("filter shader unavailable, using plain output");
+        SafeRelease(pvb);
+        SafeRelease(ppb);
+        pvb = Compile(kPostFallbackHlsl, sizeof kPostFallbackHlsl - 1, "vs_post", "vs_5_0");
+        ppb = Compile(kPostFallbackHlsl, sizeof kPostFallbackHlsl - 1, "ps_post", "ps_5_0");
+    }
     if (!vsb || !psb || !pvb || !ppb) return false;
     R->dev->CreateVertexShader(vsb->GetBufferPointer(), vsb->GetBufferSize(), nullptr, &R->vs);
     R->dev->CreatePixelShader(psb->GetBufferPointer(), psb->GetBufferSize(), nullptr, &R->ps);
@@ -511,7 +524,7 @@ static bool CreateDevice() {
     bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     bd.ByteWidth = 32;
     R->dev->CreateBuffer(&bd, nullptr, &R->frameCb);
-    bd.ByteWidth = 16;
+    bd.ByteWidth = 64;
     R->dev->CreateBuffer(&bd, nullptr, &R->postCb);
     R->vbCapacity = 1u << 20;  // vertices
     bd.ByteWidth = R->vbCapacity * sizeof(Vtx);
@@ -1256,7 +1269,15 @@ EXPORT int hwAPI_ShowViewSurface(void* rcp) {
     R->ctx->PSSetShader(R->postPs, nullptr, 0);
     float g = g_cfg.gammaOverride > 0 ? g_cfg.gammaOverride : R->gamma;
     if (!(g > 0.1f)) g = 1.0f;
-    struct { float invGamma, sharpen, tx, ty; } pc = {1.0f / g, g_cfg.sharpen, 1.0f / R->sceneW, 1.0f / R->sceneH};
+    struct {
+        float invGamma, sharpen, tx, ty;
+        float outW, outH, outX, outY;
+        float mode, strength, lines, time;
+        float virtW, virtH, pad[2];
+    } pc = {1.0f / g, g_cfg.filter == 0 ? g_cfg.sharpen : g_cfg.sharpen * 0.5f, 1.0f / R->sceneW, 1.0f / R->sceneH,
+            R->presentVp.Width, R->presentVp.Height, R->presentVp.TopLeftX, R->presentVp.TopLeftY,
+            (float)g_cfg.filter, g_cfg.filterStrength, (float)g_cfg.scanlines, (float)(R->frame % 100000) / 60.0f,
+            R->virtW * g_wideK, (float)R->virtH, {0, 0}};
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(R->ctx->Map(R->postCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) {
         memcpy(m.pData, &pc, sizeof pc);
@@ -1270,6 +1291,15 @@ EXPORT int hwAPI_ShowViewSurface(void* rcp) {
 
     ++R->frame;
     RunKeySchedule(R->frame);
+    // F9 cycles the screen filter while playing
+    static bool f9Down = false;
+    bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0 && GetForegroundWindow() == R->hwnd;
+    if (f9 && !f9Down) {
+        static const char* names[] = {"off", "scanlines", "CRT", "CRT curved", "retro 640x480", "VHS"};
+        g_cfg.filter = (g_cfg.filter + 1) % 6;
+        Log("filter: %s", names[g_cfg.filter]);
+    }
+    f9Down = f9;
     for (int f : g_cfg.shotFrames) {
         if ((uint64_t)f == R->frame) {
             char path[MAX_PATH];

@@ -23,6 +23,9 @@ struct Settings {
     float lightmapScale = 2.0f;
     bool cutout = true;
     float sharpen = 0.3f;
+    int filter = 0;  // 0 off, 1 scanlines, 2 CRT, 3 CRT curved, 4 retro pixels, 5 VHS
+    float filterStrength = 0.7f;
+    int scanlines = 480;
     // game (szOptions.ini)
     float gamma = 1.866667f;
     float mouseSens = 1.0f;

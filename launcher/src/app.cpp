@@ -137,6 +137,9 @@ void App::LoadSettings() {
     s_.lightmapScale = m.GetFloat("Quality", "LightmapScale", d.lightmapScale);
     s_.cutout = m.GetInt("Quality", "OpaqueCutout", 1) != 0;
     s_.sharpen = m.GetFloat("Post", "Sharpen", d.sharpen);
+    s_.filter = std::min(std::max(m.GetInt("Post", "Filter", d.filter), 0), 5);
+    s_.filterStrength = m.GetFloat("Post", "FilterStrength", d.filterStrength);
+    s_.scanlines = m.GetInt("Post", "Scanlines", d.scanlines);
 
     Ini o;
     o.Load(gameDir_ / "szOptions.ini");
@@ -176,6 +179,9 @@ bool App::SaveSettings() {
         m.SetFloat("Quality", "LightmapScale", s_.lightmapScale, 2);
         m.SetInt("Quality", "OpaqueCutout", s_.cutout);
         m.SetFloat("Post", "Sharpen", s_.sharpen, 2);
+        m.SetInt("Post", "Filter", s_.filter);
+        m.SetFloat("Post", "FilterStrength", s_.filterStrength, 2);
+        m.SetInt("Post", "Scanlines", s_.scanlines);
         m.Set("Post", "Gamma", "0");
         ok &= m.Save();
 
@@ -545,6 +551,34 @@ void App::DrawGraphicsTab() {
     Label("See-through details");
     if (ImGui::Checkbox("##cutout", &s_.cutout)) dirty_ = true;
     Help("Draws fences, grates and railings with their holes, as on period hardware.");
+
+    Section("Screen filter");
+    Label("Filter");
+    {
+        const char* n[] = {"Off", "Scanlines", "CRT (aperture grille)", "CRT (curved screen)", "Retro 640x480 pixels", "VHS tape"};
+        if (ImGui::Combo("##filter", &s_.filter, n, 6)) dirty_ = true;
+        Help("Press F9 in game to cycle through the filters.");
+    }
+    ImGui::BeginDisabled(s_.filter == 0);
+    Label("Filter strength");
+    if (ImGui::SliderFloat("##fstr", &s_.filterStrength, 0.1f, 1.0f, "%.2f")) dirty_ = true;
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(s_.filter < 1 || s_.filter > 3);
+    Label("Scanline count");
+    {
+        static const int v[] = {240, 360, 480, 540, 720};
+        char cur[32];
+        std::snprintf(cur, sizeof cur, "%d lines", s_.scanlines);
+        if (ImGui::BeginCombo("##lines", cur)) {
+            for (int x : v) {
+                char l[48];
+                std::snprintf(l, sizeof l, "%d lines%s", x, x == 240 ? "  (arcade / low-res)" : x == 480 ? "  (original VGA)" : "");
+                if (ImGui::Selectable(l, s_.scanlines == x)) { s_.scanlines = x; dirty_ = true; }
+            }
+            ImGui::EndCombo();
+        }
+    }
+    ImGui::EndDisabled();
 
     Section("Lighting");
     Label("Lightmap intensity");
