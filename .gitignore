@@ -1,0 +1,6 @@
+ref/
+build/
+*.gpr
+*.rep/
+backup/
+launcher/build/
