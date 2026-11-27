@@ -38,6 +38,21 @@ No game files are included: you need your own copy of the game.
 - A 2-byte compatibility patch for `SlaveZero.exe`: its CPU-speed probe executes `cli`/`sti`, which
   faults on Windows NT and Wine. The launcher applies it and keeps `SlaveZero.exe.original`.
 
+## Crashes and bug reports
+
+If the game crashes, the renderer writes `szModern-crash.txt` and `szModern-crash.dmp` into the game
+folder and the launcher shows where they are. Please open an issue with those two files and
+`szModern.log` attached, plus your Windows edition and GPU.
+
+If the game vanishes and no crash report appears, Windows usually still recorded the crash:
+
+- **Event Viewer** → Windows Logs → Application → the "Application Error" entry (event ID 1000) for
+  `SlaveZero.exe`. It names the faulting module, its offset and the exception code; copy the text.
+- **Reliability Monitor** (run `perfmon /rel`) shows the same entries on a timeline.
+- For a full dump, create the registry key
+  `HKLM\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\SlaveZero.exe` with a DWORD
+  `DumpType` = `2`; the next crash is saved in `%LOCALAPPDATA%\CrashDumps`.
+
 ## Building
 
 Requirements: a Linux host with `g++`, SDL3, Python 3, ImageMagick, and

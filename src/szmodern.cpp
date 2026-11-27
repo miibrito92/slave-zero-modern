@@ -22,6 +22,7 @@
 #include "config.h"
 #include "engine.h"
 #include "overlay.h"
+#include "crash.h"
 #include "shaders.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -45,6 +46,7 @@ char g_gameDir[MAX_PATH];
 char g_dllPath[MAX_PATH];
 static char g_dllName[MAX_PATH];
 static FILE* g_log;
+static int g_testCrashFrame = 0;  // SZM_TEST_CRASH=<frame>: crash on purpose (tests the crash report)
 
 void Log(const char* fmt, ...) {
     if (!g_log) return;
@@ -1087,6 +1089,8 @@ EXPORT int hwAPI_StartUp(void* rcp) {
         g_log = fopen(path, "w");
     }
     Log("Slave Zero modern renderer starting (%s), widescreen factor %.3f", g_dllName, g_wideK);
+    crash::LogSystemInfo();
+    crash::Install();  // again: the game may have set its own filter since the DLL loaded
     void* o = F<void*>(rcp, rc::Opt);
     void* pp = F<void*>(rcp, rc::Persp);
     Log("mode %dx%d, persp %dx%d, lightmaps %d, vsync %d", F<int>(o, opt::ModeWidth), F<int>(o, opt::ModeHeight),
@@ -1498,7 +1502,21 @@ EXPORT int hwAPI_ShowViewSurface(void* rcp) {
     int vsync = g_cfg.vsync >= 0 ? g_cfg.vsync : F<int>(o, opt::VSync);
     HRESULT hr = R->swap->Present(vsync ? 1 : 0, 0);
     QueryPerformanceCounter(&R->lastPresent);
-    if (FAILED(hr) && R->frame % 600 == 1) Log("Present failed 0x%08lx", hr);
+    if (FAILED(hr)) {
+        static bool removedLogged = false;
+        if ((hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) && !removedLogged) {
+            removedLogged = true;  // GPU driver crashed or reset (TDR): the game can't recover from this
+            Log("Present failed 0x%08lx: GPU device lost, reason 0x%08lx, frame %llu", hr,
+                R->dev->GetDeviceRemovedReason(), (unsigned long long)R->frame);
+        } else if (R->frame % 600 == 1) {
+            Log("Present failed 0x%08lx", hr);
+        }
+    }
+    crash::NoteFrame(R->frame);
+    if (g_testCrashFrame > 0 && R->frame >= (uint64_t)g_testCrashFrame) {
+        Log("SZM_TEST_CRASH reached, crashing on purpose");
+        *(volatile int*)(uintptr_t)0x10 = 1;
+    }
     if (unsigned apply = overlay::TakeApply()) {  // settings changed in the overlay
         if (apply & overlay::ApplyTargets) {
             R->ctx->ClearState();
@@ -1691,6 +1709,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
         if (slash) *slash = 0;
         snprintf(g_gameDir, sizeof g_gameDir, "%s", path);
         LoadConfig();
+        crash::Install();
+        if (const char* e = getenv("SZM_TEST_CRASH")) g_testCrashFrame = atoi(e);
         if (g_cfg.widescreen) {
             int w = GetSystemMetrics(SM_CXSCREEN), h = GetSystemMetrics(SM_CYSCREEN);
             if (g_cfg.windowed) {
@@ -1700,6 +1720,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
             float k = (h > 0) ? ((float)w / h) / (4.0f / 3.0f) : 1.0f;
             if (k > 1.001f && InstallWidescreenHook()) g_wideK = std::min(k, 3.0f);
         }
+    }
+    if (reason == DLL_PROCESS_DETACH) {
+        Log("process exiting normally");  // missing from the log = the process was killed or crashed
     }
     return TRUE;
 }

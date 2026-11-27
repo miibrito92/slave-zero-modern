@@ -26,6 +26,7 @@ launcher/build.sh     # launchers: AppImage and .exe (embed the renderer built a
 |---|---|
 | `src/szmodern.cpp` | The Direct3D 11 renderer (the game's `hwAPI` plugin interface) |
 | `src/overlay.cpp` | In-game settings menu (F10), input blocking and pause |
+| `src/crash.cpp` | Crash report (`szModern-crash.txt` + minidump) and first-chance exception log |
 | `src/shaders.h` | Scene shader and post-processing filters |
 | `docs/hwapi.md` | Reverse-engineering notes: plugin interface, data layouts, hooked addresses |
 | `launcher/src/` | Launcher core (`app.cpp`) and per-platform code (`platform_*.cpp`) |
@@ -47,10 +48,14 @@ tools/headless-test.sh "1250" 1300 240 "100:1b,300:0d,750:0d,900:0d,1000:25,1100
 ```
 
 Environment switches understood by the renderer (tests only): `SZM_SHOTS`, `SZM_EXIT`, `SZM_KEYS`,
-`SZM_LOGTEX`, `SZM_TEST_RESTART`, `SZM_TEST_APPLY`. The launcher has `SZL_SHOT`, `SZL_TAB`, `SZL_SCALE`,
-`SZL_REPORT` and `SZL_AUTOPLAY`. Tests rewrite `szModern.ini` in the game folder, so back it up first.
+`SZM_LOGTEX`, `SZM_TEST_RESTART`, `SZM_TEST_APPLY`, `SZM_TEST_CRASH=<frame>`. The launcher has `SZL_SHOT`,
+`SZL_TAB`, `SZL_SCALE`, `SZL_REPORT`, `SZL_AUTOPLAY` and `SZL_CRASHDLG`. Tests rewrite `szModern.ini` in the game folder, so back it up first.
 
 `szModern.log` next to the game records what the renderer did; please attach it to bug reports.
+After a crash the renderer also writes `szModern-crash.txt` (exception, module+offset, registers, a
+stack scan, loaded modules) and `szModern-crash.dmp` (open in Visual Studio or WinDbg). If the log does not
+end with `process exiting normally` and no crash report exists, the process was killed or failed fast
+(e.g. `0xC0000409`); then the Windows event log has the details (see the README).
 
 ## License
 

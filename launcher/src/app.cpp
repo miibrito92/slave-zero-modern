@@ -410,9 +410,43 @@ void App::Play() {
     std::string err;
     TakeFlag(gameDir_, "szmodern.restart");
     TakeFlag(gameDir_, "szmodern.launcher");
+    crashBefore_ = CrashReportTime(gameDir_);
     if (!platform::Launch(o, err)) { Notify("Launch failed: " + err, true); return; }
     Notify("Starting Slave Zero...");
     gameWasRunning_ = true;
+}
+
+// Shown after a run that ended in a crash. A plain window rather than a modal: ImGui's modal
+// dimming asserts with the full-screen NoBringToFrontOnFocus main window.
+void App::DrawCrashDialog() {
+    if (!crashed_) return;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f), ImGuiCond_Always,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30, 0));
+    ImGui::SetNextWindowFocus();
+    if (ImGui::Begin("Slave Zero crashed", nullptr,
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("The game closed because of a crash. A report was saved in the game folder:");
+        ImGui::BulletText("szModern-crash.txt");
+        ImGui::BulletText("szModern-crash.dmp");
+        ImGui::BulletText("szModern.log");
+        ImGui::TextWrapped("Please attach these three files to a new issue so the cause can be found:");
+        ImGui::TextColored(kAccent, "github.com/miibrito92/slave-zero-modern/issues");
+        ImGui::Spacing();
+        if (ImGui::Button("Open game folder")) platform::OpenFolder(gameDir_);
+        ImGui::SameLine();
+        if (ImGui::Button("Close") || ImGui::IsKeyPressed(ImGuiKey_Escape)) crashed_ = false;
+    }
+    ImGui::End();
+}
+
+// Time stamp of szModern-crash.txt, which the renderer writes when the game crashes.
+fs::file_time_type App::CrashReportTime(const fs::path& dir) {
+    std::error_code ec;
+    auto t = fs::last_write_time(dir / "szModern-crash.txt", ec);
+    return ec ? fs::file_time_type::min() : t;
 }
 
 // Flags the in-game menu leaves in the game folder before it closes the game.
@@ -428,6 +462,10 @@ void App::OnGameExited() {
         return;
     }
     bool wantWindow = TakeFlag(gameDir_, "szmodern.launcher");
+    if (CrashReportTime(gameDir_) != crashBefore_) {  // crashed: stay open and say where the report is
+        crashed_ = true;
+        wantWindow = true;
+    }
     if (!wantWindow && (s_.closeOnPlay || hiddenStart_)) {
         quit_ = true;
         return;
@@ -480,6 +518,8 @@ bool App::Frame() {
         for (auto& r : runners_) f << "runner=" << r.name << " | " << r.path.u8string() << "\n";
         quit_ = true;
     }
+    static bool crashDbg = std::getenv("SZL_CRASHDLG") && (crashed_ = true);  // debug: show the crash dialog
+    (void)crashDbg;
     if (std::getenv("SZL_AUTOPLAY") && frames++ == 5) {  // debug: press Play once, keep the launcher open
         s_.closeOnPlay = false;
         Play();
@@ -514,6 +554,7 @@ bool App::Frame() {
 
     DrawFooter();
     ImGui::End();
+    DrawCrashDialog();
     return !quit_;
 }
 

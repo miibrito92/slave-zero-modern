@@ -24,7 +24,8 @@ flags=(-O2 -std=c++17 -fno-exceptions -fno-rtti -Wall -Wextra -Wno-unused-parame
        -DIMGUI_DISABLE_WIN32_DEFAULT_IME_FUNCTIONS -I"$imgui" -I"$imgui/backends" -I"$gen")
 "$cxx" "${flags[@]}" -c "$here/src/szmodern.cpp" -o "$obj/szmodern.o"
 "$cxx" "${flags[@]}" -c "$here/src/overlay.cpp" -o "$obj/overlay.o"
-"$cxx" -shared -static -o "$here/build/szmodern.dll" "$obj/szmodern.o" "$obj/overlay.o" \
+"$cxx" "${flags[@]}" -c "$here/src/crash.cpp" -o "$obj/crash.o"
+"$cxx" -shared -static -o "$here/build/szmodern.dll" "$obj/szmodern.o" "$obj/overlay.o" "$obj/crash.o" \
   "$obj"/imgui.o "$obj"/imgui_draw.o "$obj"/imgui_tables.o "$obj"/imgui_widgets.o \
   "$obj"/imgui_impl_win32.o "$obj"/imgui_impl_dx11.o \
   -ld3d11 -ldxgi -ld3dcompiler_47 -luuid -lwinmm -lpsapi -ldwmapi -lgdi32

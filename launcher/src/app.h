@@ -1,5 +1,6 @@
 // Launcher core: settings model, install/repair, launch, and the ImGui interface.
 #pragma once
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -106,6 +107,10 @@ private:
     fs::path steamCmdDir_;       // game folder the Steam command starts
     std::vector<fs::path> installs_;  // detected copies of the game
     bool UsesSteamCommand() const;
+    void DrawCrashDialog();
+    static std::filesystem::file_time_type CrashReportTime(const std::filesystem::path& dir);
+    std::filesystem::file_time_type crashBefore_{};
+    bool crashed_ = false;       // last run crashed: show the crash report dialog
     bool hiddenStart_ = false;   // starting the game directly; window not shown yet
     bool pendingPlay_ = false;
     bool gameWasRunning_ = false;
